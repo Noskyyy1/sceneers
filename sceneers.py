@@ -1,104 +1,125 @@
+```python
+# ============================================================
+# IDX STOCK SCREENER
+# Technical + Fundamental + Market Regime + Relative Strength
+# Designed for VS Code + GitHub + Streamlit
+# ============================================================
+
 import io
+import re
 from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 import yfinance as yf
 
 
-# =========================================================
+# ============================================================
 # PAGE CONFIG
-# =========================================================
+# ============================================================
+
 st.set_page_config(
-    page_title="IDX Swing & Fundamental Screener",
+    page_title="IDX Stock Screener",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 IDX Stock Screener — Technical + Fundamental")
+
+# ============================================================
+# TITLE
+# ============================================================
+
+st.title(
+    "📈 IDX Stock Screener — Technical + Fundamental"
+)
+
 st.caption(
-    "Hybrid screener untuk research saham IDX: trend, momentum, volume, valuasi, "
-    "relative strength, breakout, risk/reward, dan auto AI prompt."
+    "Screener saham IDX untuk research: trend, momentum, "
+    "volume, fundamental, relative strength, breakout, "
+    "risk/reward dan AI analysis prompt."
 )
 
 
-# =========================================================
-# CONSTANTS
-# =========================================================
+# ============================================================
+# DEFAULT WATCHLIST
+# ============================================================
+
 DEFAULT_TICKERS = [
-    "AGRO, BABP, BACA, BBYB, BCIC, BDMN, BEKS, BGTG, BINA, BJBR, BJTM, BMAS, BNBA, BSIM, BVIC, DNAR, MAYA, NOBU, ACST, ADHI, APLN, ASRI, BAPA, BKSL, BSDE, CTRA, DILD, DMAS, ELTY, FMII, GWSA, JRPT, KIJA, LPCK, LPKR, MDLN, MTLA, PPRO, PTPP, PUDP, SMRA, SSIA, TOTL, WIKA, WSKT, ADMR, APEX, ARII, BIPI, BOSS, BRMS, BUMI, DEWA, DOID, ELSA, ENRG, INDY, KKGI, MEDC, MYOH, RMKE, SOCI, TOBA, ACES, ALTO, ANDI, APLI, BATA, BUVA, CINT, CLEO, COCO, FOOD, GOOD, HOKI, IKAI, MAIN, PANI, ROTI, SIPD, SOUL, WIFI, ASSA, BIRD, CMNP, EXCL, FREN, GIAA, ISAT, JSMR, META, SMDR, TMAS, TOWR, TRJA, ATIC, BUKA, CASH, DIGI, GOTO, HDIT, MLPT",
+    "BBCA",
+    "BBRI",
+    "BMRI",
+    "BBNI",
+    "TLKM",
+    "ASII",
+    "UNVR",
+    "ICBP",
+    "AMRT",
+    "ADRO",
+    "PTBA",
+    "ITMG",
+    "PGAS",
+    "ANTM",
+    "INCO",
+    "CPIN",
+    "BRIS",
+    "MEDC",
+    "MDKA",
+    "AKRA",
+    "AMMN",
+    "BREN",
+    "TPIA",
+    "GOTO",
 ]
 
 
-# =========================================================
-# SIDEBAR
-# =========================================================
-st.sidebar.header("⚙️ Parameter Screening")
+# ============================================================
+# IDX SOURCES
+# ============================================================
 
-selected_tickers = st.sidebar.multiselect(
-    "Pilih Daftar Saham IDX",
-    options=DEFAULT_TICKERS,
-    default=DEFAULT_TICKERS[:12],
+IDX_STOCK_PRICE_URL = (
+    "https://www.idx.co.id/id/data-pasar/"
+    "laporan-statistik/digital-statistic/monthly/"
+    "trading-summary/table-of-stock-price/"
 )
 
-min_score = st.sidebar.slider(
-    "Minimal Composite Score",
-    min_value=0,
-    max_value=100,
-    value=55,
-    step=1,
-)
-
-holding_days = st.sidebar.slider(
-    "Horizon Swing (hari bursa)",
-    min_value=10,
-    max_value=90,
-    value=60,
-    step=5,
-)
-
-atr_multiplier = st.sidebar.slider(
-    "ATR Multiplier untuk SL",
-    min_value=0.5,
-    max_value=3.0,
-    value=1.5,
-    step=0.1,
-)
-
-support_lookback = st.sidebar.slider(
-    "Lookback Support / Resistance",
-    min_value=20,
-    max_value=120,
-    value=60,
-    step=5,
-)
-
-breakout_lookback = st.sidebar.slider(
-    "Breakout Lookback",
-    min_value=10,
-    max_value=100,
-    value=20,
-    step=5,
-)
-
-st.sidebar.divider()
-
-if st.sidebar.button("🧹 Clear Cache"):
-    st.cache_data.clear()
-    st.rerun()
-
-st.sidebar.info(
-    "Data harga dan fundamental berasal dari Yahoo Finance melalui yfinance. "
-    "Gunakan hasil sebagai alat research, bukan jaminan hasil investasi."
+IDX_LENDABLE_URL = (
+    "https://www.idx.co.id/id/market-data/"
+    "securities-borrowing-and-lending/sections/"
+    "lendable-stock"
 )
 
 
-# =========================================================
-# UTILS
-# =========================================================
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+if "results" not in st.session_state:
+    st.session_state["results"] = []
+
+if "errors" not in st.session_state:
+    st.session_state["errors"] = []
+
+if "market" not in st.session_state:
+    st.session_state["market"] = {
+        "regime": "Unknown",
+        "score": 50.0,
+        "df": pd.DataFrame(),
+    }
+
+if "universe" not in st.session_state:
+    st.session_state["universe"] = []
+
+
+# ============================================================
+# BASIC UTILITIES
+# ============================================================
+
 def safe_float(value, default=np.nan):
+    """Convert value into float safely."""
+
     try:
         if value is None:
             return default
@@ -123,27 +144,232 @@ def format_rupiah(value):
     return f"Rp {value:,.0f}".replace(",", ".")
 
 
-# =========================================================
-# PRICE DATA
-# =========================================================
-@st.cache_data(ttl=1800, show_spinner=False)
-def get_price_data(symbol: str, period_days: int = 550) -> pd.DataFrame:
+def clean_ticker(value):
     """
-    Download OHLCV data.
+    Normalize ticker.
 
-    symbol:
-        BBCA.JK
-        BBRI.JK
-        ^JKSE
+    Examples:
+    BBCA
+    BBCA.JK
+    $BBCA
+    -> BBCA
+    """
 
-    period_days:
-        History buffer untuk SMA200 dan indikator lainnya.
+    if value is None:
+        return ""
+
+    ticker = str(value).upper().strip()
+
+    ticker = ticker.replace("$", "")
+    ticker = ticker.replace(".JK", "")
+
+    ticker = re.sub(
+        r"[^A-Z0-9]",
+        "",
+        ticker,
+    )
+
+    return ticker
+
+
+# ============================================================
+# LOAD ALL IDX TICKERS
+# ============================================================
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_all_idx_tickers():
+    """
+    Try to retrieve the broad IDX stock universe.
+
+    Primary source:
+        IDX Table of Stock Price
+
+    Fallback:
+        IDX Lendable Stock
+
+    Important:
+    IDX website is dynamic, so parsing may occasionally change.
+    The application keeps manual input available as fallback.
+    """
+
+    tickers = set()
+
+    sources = [
+        IDX_STOCK_PRICE_URL,
+        IDX_LENDABLE_URL,
+    ]
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 "
+            "(Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/140 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+    }
+
+    # --------------------------------------------------------
+    # SOURCE 1 / SOURCE 2
+    # --------------------------------------------------------
+
+    for url in sources:
+
+        try:
+
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=20,
+            )
+
+            if response.status_code != 200:
+                continue
+
+            html = response.text
+
+            # ------------------------------------------------
+            # Parse HTML tables
+            # ------------------------------------------------
+
+            try:
+
+                tables = pd.read_html(
+                    io.StringIO(html)
+                )
+
+            except ValueError:
+                tables = []
+
+            for table in tables:
+
+                if table.empty:
+                    continue
+
+                # Normalize columns
+                table.columns = [
+                    str(col).strip()
+                    for col in table.columns
+                ]
+
+                possible_code_columns = [
+                    col
+                    for col in table.columns
+                    if (
+                        "code" in col.lower()
+                        or "kode" in col.lower()
+                    )
+                ]
+
+                for col in possible_code_columns:
+
+                    for value in table[col].astype(str):
+
+                        ticker = clean_ticker(
+                            value
+                        )
+
+                        # Valid IDX ticker:
+                        # usually 4 letters/numbers
+                        if (
+                            3 <= len(ticker) <= 5
+                            and ticker.isalnum()
+                        ):
+                            tickers.add(
+                                ticker
+                            )
+
+            # ------------------------------------------------
+            # Regex fallback
+            # ------------------------------------------------
+
+            if not tickers:
+
+                patterns = re.findall(
+                    r"\b[A-Z]{4}\b",
+                    html,
+                )
+
+                for ticker in patterns:
+
+                    ticker = clean_ticker(
+                        ticker
+                    )
+
+                    if ticker:
+                        tickers.add(
+                            ticker
+                        )
+
+            # If primary source has enough tickers
+            if len(tickers) >= 100:
+                break
+
+        except Exception:
+            continue
+
+    # --------------------------------------------------------
+    # Remove obvious non-stock values
+    # --------------------------------------------------------
+
+    blacklist = {
+        "CODE",
+        "KODE",
+        "NAME",
+        "SECTOR",
+        "STOCK",
+        "INDEX",
+        "DATA",
+        "PRICE",
+        "DATE",
+        "VOLUME",
+        "VALUE",
+        "TOTAL",
+        "TABLE",
+        "PREV",
+    }
+
+    tickers = {
+        ticker
+        for ticker in tickers
+        if ticker not in blacklist
+    }
+
+    result = sorted(
+        tickers
+    )
+
+    return result
+
+
+# ============================================================
+# PRICE DATA
+# ============================================================
+
+@st.cache_data(
+    ttl=1800,
+    show_spinner=False,
+)
+def get_price_data(
+    symbol,
+    period_days=550,
+):
+    """
+    Download OHLCV from Yahoo Finance.
     """
 
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=period_days)
+
+    start_date = (
+        end_date
+        - timedelta(
+            days=period_days
+        )
+    )
 
     try:
+
         df = yf.download(
             symbol,
             start=start_date,
@@ -153,15 +379,27 @@ def get_price_data(symbol: str, period_days: int = 550) -> pd.DataFrame:
             actions=False,
             threads=False,
         )
+
     except Exception:
+
         return pd.DataFrame()
 
     if df is None or df.empty:
         return pd.DataFrame()
 
-    # Handle MultiIndex dari yfinance
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    # --------------------------------------------------------
+    # Handle MultiIndex
+    # --------------------------------------------------------
+
+    if isinstance(
+        df.columns,
+        pd.MultiIndex,
+    ):
+
+        df.columns = (
+            df.columns
+            .get_level_values(0)
+        )
 
     required_columns = [
         "Open",
@@ -171,91 +409,159 @@ def get_price_data(symbol: str, period_days: int = 550) -> pd.DataFrame:
         "Volume",
     ]
 
-    missing = [
+    missing_columns = [
         col
         for col in required_columns
         if col not in df.columns
     ]
 
-    if missing:
+    if missing_columns:
         return pd.DataFrame()
 
-    df = df[required_columns].copy()
+    df = df[
+        required_columns
+    ].copy()
 
     df = df.dropna(
-        subset=["Open", "High", "Low", "Close"]
+        subset=[
+            "Open",
+            "High",
+            "Low",
+            "Close",
+        ]
     )
 
-    df.index = pd.to_datetime(df.index)
+    df.index = pd.to_datetime(
+        df.index
+    )
 
     return df
 
 
-# =========================================================
-# FUNDAMENTAL DATA
-# =========================================================
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_fundamental_data(ticker: str) -> dict:
+# ============================================================
+# FUNDAMENTALS
+# ============================================================
 
-    symbol = f"{ticker}.JK"
+@st.cache_data(
+    ttl=86400,
+    show_spinner=False,
+)
+def get_fundamental_data(
+    ticker
+):
+    symbol = (
+        f"{ticker}.JK"
+    )
 
     try:
-        info = yf.Ticker(symbol).info or {}
+
+        info = (
+            yf.Ticker(
+                symbol
+            ).info
+            or {}
+        )
+
     except Exception:
+
         info = {}
 
     return {
-        "trailingPE": safe_float(
-            info.get("trailingPE")
-        ),
 
-        "forwardPE": safe_float(
-            info.get("forwardPE")
-        ),
+        "trailingPE":
+            safe_float(
+                info.get(
+                    "trailingPE"
+                )
+            ),
 
-        "priceToBook": safe_float(
-            info.get("priceToBook")
-        ),
+        "forwardPE":
+            safe_float(
+                info.get(
+                    "forwardPE"
+                )
+            ),
 
-        "returnOnEquity": safe_float(
-            info.get("returnOnEquity")
-        ),
+        "priceToBook":
+            safe_float(
+                info.get(
+                    "priceToBook"
+                )
+            ),
 
-        "dividendYield": safe_float(
-            info.get("dividendYield"),
-            0.0,
-        ),
+        "returnOnEquity":
+            safe_float(
+                info.get(
+                    "returnOnEquity"
+                )
+            ),
 
-        "marketCap": safe_float(
-            info.get("marketCap"),
-            0.0,
-        ),
+        "dividendYield":
+            safe_float(
+                info.get(
+                    "dividendYield"
+                ),
+                0.0,
+            ),
 
-        "sector": info.get("sector") or "Unknown",
+        "marketCap":
+            safe_float(
+                info.get(
+                    "marketCap"
+                ),
+                0.0,
+            ),
 
-        "industry": info.get("industry") or "Unknown",
+        "sector":
+            info.get(
+                "sector"
+            )
+            or "Unknown",
 
-        "longName": info.get("longName") or ticker,
+        "industry":
+            info.get(
+                "industry"
+            )
+            or "Unknown",
+
+        "longName":
+            info.get(
+                "longName"
+            )
+            or ticker,
     }
 
 
-# =========================================================
+# ============================================================
 # TECHNICAL INDICATORS
-# =========================================================
-def ema(series, span):
+# ============================================================
+
+def calculate_ema(
+    series,
+    span,
+):
     return series.ewm(
         span=span,
         adjust=False,
     ).mean()
 
 
-def calculate_rsi(series, length=14):
+def calculate_rsi(
+    series,
+    length=14,
+):
 
     delta = series.diff()
 
-    gain = delta.clip(lower=0)
+    gain = delta.clip(
+        lower=0
+    )
 
-    loss = -delta.clip(upper=0)
+    loss = (
+        -delta.clip(
+            upper=0
+        )
+    )
 
     avg_gain = gain.ewm(
         alpha=1 / length,
@@ -269,25 +575,43 @@ def calculate_rsi(series, length=14):
         min_periods=length,
     ).mean()
 
-    rs = avg_gain / avg_loss.replace(
-        0,
-        np.nan,
+    rs = (
+        avg_gain
+        /
+        avg_loss.replace(
+            0,
+            np.nan,
+        )
     )
 
-    result = 100 - (
-        100 / (1 + rs)
+    rsi = (
+        100
+        -
+        (
+            100
+            /
+            (1 + rs)
+        )
     )
 
-    return result.fillna(50)
+    return rsi.fillna(50)
 
 
-def calculate_atr(df, length=14):
+def calculate_atr(
+    df,
+    length=14,
+):
 
-    previous_close = df["Close"].shift(1)
+    previous_close = (
+        df["Close"].shift(1)
+    )
 
     true_range = pd.concat(
         [
-            df["High"] - df["Low"],
+            (
+                df["High"]
+                - df["Low"]
+            ),
 
             (
                 df["High"]
@@ -314,89 +638,115 @@ def add_indicators(
 
     output = df.copy()
 
-    # Moving averages
-    output["SMA_20"] = (
+    # --------------------------------------------------------
+    # Moving Average
+    # --------------------------------------------------------
+
+    output["SMA20"] = (
         output["Close"]
         .rolling(20)
         .mean()
     )
 
-    output["SMA_50"] = (
+    output["SMA50"] = (
         output["Close"]
         .rolling(50)
         .mean()
     )
 
-    output["SMA_200"] = (
+    output["SMA200"] = (
         output["Close"]
         .rolling(200)
         .mean()
     )
 
-    # EMA
-    output["EMA_20"] = ema(
-        output["Close"],
-        20,
+    output["EMA20"] = (
+        calculate_ema(
+            output["Close"],
+            20,
+        )
     )
 
-    output["EMA_50"] = ema(
-        output["Close"],
-        50,
+    output["EMA50"] = (
+        calculate_ema(
+            output["Close"],
+            50,
+        )
     )
 
+    # --------------------------------------------------------
     # MACD
-    ema12 = ema(
+    # --------------------------------------------------------
+
+    ema12 = calculate_ema(
         output["Close"],
         12,
     )
 
-    ema26 = ema(
+    ema26 = calculate_ema(
         output["Close"],
         26,
     )
 
     output["MACD"] = (
-        ema12 - ema26
+        ema12
+        - ema26
     )
 
-    output["MACD_Signal"] = ema(
-        output["MACD"],
-        9,
+    output["MACDSignal"] = (
+        calculate_ema(
+            output["MACD"],
+            9,
+        )
     )
 
-    output["MACD_Hist"] = (
+    output["MACDHist"] = (
         output["MACD"]
-        - output["MACD_Signal"]
+        - output["MACDSignal"]
     )
 
+    # --------------------------------------------------------
     # RSI
+    # --------------------------------------------------------
+
     output["RSI"] = calculate_rsi(
         output["Close"],
         14,
     )
 
+    # --------------------------------------------------------
     # ATR
+    # --------------------------------------------------------
+
     output["ATR"] = calculate_atr(
         output,
         14,
     )
 
+    # --------------------------------------------------------
     # Volume
-    output["Vol_SMA20"] = (
+    # --------------------------------------------------------
+
+    output["VolumeSMA20"] = (
         output["Volume"]
         .rolling(20)
         .mean()
     )
 
-    output["Volume_Ratio"] = (
+    output["VolumeRatio"] = (
         output["Volume"]
-        / output["Vol_SMA20"]
-        .replace(0, np.nan)
+        /
+        output["VolumeSMA20"]
+        .replace(
+            0,
+            np.nan,
+        )
     )
 
-    # =====================================================
+    # --------------------------------------------------------
     # OBV
-    # =====================================================
+    # --------------------------------------------------------
+
     direction = (
         np.sign(
             output["Close"].diff()
@@ -409,10 +759,17 @@ def add_indicators(
         * output["Volume"]
     ).cumsum()
 
-    # =====================================================
+    output["OBVMA20"] = (
+        output["OBV"]
+        .rolling(20)
+        .mean()
+    )
+
+    # --------------------------------------------------------
     # CMF
-    # =====================================================
-    spread = (
+    # --------------------------------------------------------
+
+    price_range = (
         output["High"]
         - output["Low"]
     ).replace(
@@ -420,37 +777,37 @@ def add_indicators(
         np.nan,
     )
 
-    money_flow_multiplier = (
+    mfm = (
         (
             output["Close"]
             - output["Low"]
         )
-        - (
+        -
+        (
             output["High"]
             - output["Close"]
         )
-    ) / spread
+    ) / price_range
 
-    money_flow_volume = (
-        money_flow_multiplier
+    mfv = (
+        mfm
         .fillna(0)
         * output["Volume"]
     )
 
     output["CMF20"] = (
-        money_flow_volume
-        .rolling(20)
-        .sum()
+        mfv.rolling(20).sum()
         /
         output["Volume"]
         .rolling(20)
         .sum()
     )
 
-    # =====================================================
-    # BREAKOUT
-    # =====================================================
-    output["Breakout_High"] = (
+    # --------------------------------------------------------
+    # Breakout
+    # --------------------------------------------------------
+
+    output["BreakoutHigh"] = (
         output["High"]
         .shift(1)
         .rolling(
@@ -459,7 +816,7 @@ def add_indicators(
         .max()
     )
 
-    output["Breakout_Low"] = (
+    output["BreakoutLow"] = (
         output["Low"]
         .shift(1)
         .rolling(
@@ -471,15 +828,16 @@ def add_indicators(
     return output
 
 
-# =========================================================
-# IHSG MARKET REGIME
-# =========================================================
-@st.cache_data(ttl=1800, show_spinner=False)
+# ============================================================
+# MARKET REGIME
+# ============================================================
+
+@st.cache_data(
+    ttl=1800,
+    show_spinner=False,
+)
 def get_market_regime():
 
-    # Important:
-    # IHSG menggunakan ^JKSE langsung,
-    # bukan ^JKSE.JK
     ihsg = get_price_data(
         "^JKSE",
         550,
@@ -504,7 +862,8 @@ def get_market_regime():
 
     if (
         latest["Close"]
-        > latest["SMA_50"]
+        >
+        latest["SMA50"]
     ):
         score += 15
     else:
@@ -512,7 +871,8 @@ def get_market_regime():
 
     if (
         latest["Close"]
-        > latest["SMA_200"]
+        >
+        latest["SMA200"]
     ):
         score += 20
     else:
@@ -520,13 +880,17 @@ def get_market_regime():
 
     if (
         latest["MACD"]
-        > latest["MACD_Signal"]
+        >
+        latest["MACDSignal"]
     ):
         score += 10
     else:
         score -= 10
 
-    if latest["RSI"] >= 50:
+    if (
+        latest["RSI"]
+        >= 50
+    ):
         score += 5
     else:
         score -= 5
@@ -558,10 +922,13 @@ def get_market_regime():
     }
 
 
-# =========================================================
+# ============================================================
 # RSI SCORE
-# =========================================================
-def score_rsi(value):
+# ============================================================
+
+def score_rsi(
+    value
+):
 
     if np.isnan(value):
         return 0
@@ -571,22 +938,25 @@ def score_rsi(value):
 
     if (
         40 <= value < 45
-        or 60 < value <= 65
+        or
+        60 < value <= 65
     ):
         return 7
 
     if (
         35 <= value < 40
-        or 65 < value <= 70
+        or
+        65 < value <= 70
     ):
         return 4
 
     return 0
 
 
-# =========================================================
+# ============================================================
 # FUNDAMENTAL SCORE
-# =========================================================
+# ============================================================
+
 def score_fundamental(
     per,
     pbv,
@@ -597,10 +967,7 @@ def score_fundamental(
 
     signals = []
 
-    # =====================================================
     # ROE
-    # Maximum = 15
-    # =====================================================
     if not np.isnan(
         roe_percent
     ):
@@ -633,10 +1000,7 @@ def score_fundamental(
 
             score += 3
 
-    # =====================================================
     # PER
-    # Maximum = 12.5
-    # =====================================================
     if (
         not np.isnan(per)
         and per > 0
@@ -666,10 +1030,7 @@ def score_fundamental(
 
             score += 3
 
-    # =====================================================
     # PBV
-    # Maximum = 12.5
-    # =====================================================
     if (
         not np.isnan(pbv)
         and pbv > 0
@@ -705,20 +1066,32 @@ def score_fundamental(
     )
 
 
-# =========================================================
-# MAIN STOCK ANALYSIS
-# =========================================================
+# ============================================================
+# ANALYZE STOCK
+# ============================================================
+
 def analyze_stock(
     ticker,
     market_df,
     market_regime,
     support_window,
     breakout_window,
-    atr_mult,
+    atr_multiplier,
 ):
 
-    raw_df = get_price_data(
+    ticker = clean_ticker(
+        ticker
+    )
+
+    if not ticker:
+        return None
+
+    symbol = (
         f"{ticker}.JK"
+    )
+
+    raw_df = get_price_data(
+        symbol
     )
 
     if (
@@ -733,7 +1106,9 @@ def analyze_stock(
     ).copy()
 
     fundamentals = (
-        get_fundamental_data(ticker)
+        get_fundamental_data(
+            ticker
+        )
     )
 
     latest = df.iloc[-1]
@@ -745,27 +1120,31 @@ def analyze_stock(
     if np.isnan(price):
         return None
 
-    # =====================================================
-    # FUNDAMENTAL
-    # =====================================================
+    # --------------------------------------------------------
+    # FUNDAMENTALS
+    # --------------------------------------------------------
+
     per = safe_float(
-        fundamentals["trailingPE"]
+        fundamentals[
+            "trailingPE"
+        ]
     )
 
     pbv = safe_float(
-        fundamentals["priceToBook"]
+        fundamentals[
+            "priceToBook"
+        ]
     )
 
-    raw_roe = fundamentals[
-        "returnOnEquity"
-    ]
+    raw_roe = safe_float(
+        fundamentals[
+            "returnOnEquity"
+        ]
+    )
 
     if np.isnan(raw_roe):
-
         roe_percent = np.nan
-
     else:
-
         roe_percent = (
             raw_roe * 100
         )
@@ -775,23 +1154,23 @@ def analyze_stock(
             fundamentals[
                 "dividendYield"
             ],
-            0,
+            0.0,
         )
         * 100
     )
 
-    # =====================================================
+    # --------------------------------------------------------
     # TECHNICAL SCORE
-    # Maximum target around 60
-    # =====================================================
+    # --------------------------------------------------------
+
     tech_score = 0.0
 
     signals = []
 
-    # SMA50
     if (
         latest["Close"]
-        > latest["SMA_50"]
+        >
+        latest["SMA50"]
     ):
 
         tech_score += 12
@@ -800,10 +1179,10 @@ def analyze_stock(
             "Harga di atas SMA 50"
         )
 
-    # SMA200
     if (
         latest["Close"]
-        > latest["SMA_200"]
+        >
+        latest["SMA200"]
     ):
 
         tech_score += 12
@@ -812,22 +1191,22 @@ def analyze_stock(
             "Harga di atas SMA 200"
         )
 
-    # Trend alignment
     if (
-        latest["SMA_50"]
-        > latest["SMA_200"]
+        latest["SMA50"]
+        >
+        latest["SMA200"]
     ):
 
         tech_score += 6
 
         signals.append(
-            "Golden trend: SMA50 > SMA200"
+            "SMA50 > SMA200"
         )
 
-    # MACD
     if (
         latest["MACD"]
-        > latest["MACD_Signal"]
+        >
+        latest["MACDSignal"]
     ):
 
         tech_score += 10
@@ -836,22 +1215,20 @@ def analyze_stock(
             "MACD bullish"
         )
 
-    # RSI
-    rsi_score = score_rsi(
+    rsi_points = score_rsi(
         latest["RSI"]
     )
 
-    tech_score += rsi_score
+    tech_score += rsi_points
 
-    if rsi_score >= 7:
+    if rsi_points >= 7:
 
         signals.append(
             f"RSI mendukung ({latest['RSI']:.1f})"
         )
 
-    # Volume
     volume_ratio = safe_float(
-        latest["Volume_Ratio"]
+        latest["VolumeRatio"]
     )
 
     if not np.isnan(
@@ -878,34 +1255,36 @@ def analyze_stock(
 
             tech_score += 3
 
-    # =====================================================
+    # --------------------------------------------------------
     # RELATIVE STRENGTH
-    # =====================================================
+    # --------------------------------------------------------
+
     stock_return_60 = np.nan
+
     ihsg_return_60 = np.nan
+
     relative_strength = np.nan
 
     if len(df) > 60:
 
-        old_stock_price = safe_float(
+        stock_old = safe_float(
             df["Close"].iloc[-61]
         )
 
-        if (
-            old_stock_price > 0
-        ):
+        if stock_old > 0:
 
             stock_return_60 = (
                 (
                     price
-                    / old_stock_price
+                    / stock_old
                 )
                 - 1
             ) * 100
 
     if (
         not market_df.empty
-        and len(market_df) > 60
+        and
+        len(market_df) > 60
     ):
 
         market_now = safe_float(
@@ -914,7 +1293,7 @@ def analyze_stock(
             ].iloc[-1]
         )
 
-        market_then = safe_float(
+        market_old = safe_float(
             market_df[
                 "Close"
             ].iloc[-61]
@@ -922,13 +1301,14 @@ def analyze_stock(
 
         if (
             market_now > 0
-            and market_then > 0
+            and
+            market_old > 0
         ):
 
             ihsg_return_60 = (
                 (
                     market_now
-                    / market_then
+                    / market_old
                 )
                 - 1
             ) * 100
@@ -939,13 +1319,14 @@ def analyze_stock(
 
                 relative_strength = (
                     stock_return_60
-                    - ihsg_return_60
+                    -
+                    ihsg_return_60
                 )
 
-    # =====================================================
+    # --------------------------------------------------------
     # MOMENTUM SCORE
-    # Maximum 20
-    # =====================================================
+    # --------------------------------------------------------
+
     momentum_score = 0.0
 
     if not np.isnan(
@@ -997,22 +1378,26 @@ def analyze_stock(
         20,
     )
 
-    # =====================================================
+    # --------------------------------------------------------
     # BREAKOUT / STRUCTURE
-    # =====================================================
+    # --------------------------------------------------------
+
     structure_score = 0.0
 
     breakout = False
 
     breakout_high = safe_float(
-        latest["Breakout_High"]
+        latest[
+            "BreakoutHigh"
+        ]
     )
 
     if (
         not np.isnan(
             breakout_high
         )
-        and price > breakout_high
+        and
+        price > breakout_high
     ):
 
         breakout = True
@@ -1027,7 +1412,9 @@ def analyze_stock(
         not np.isnan(
             breakout_high
         )
-        and price >= breakout_high * 0.98
+        and
+        price >=
+        breakout_high * 0.98
     ):
 
         structure_score += 6
@@ -1037,17 +1424,15 @@ def analyze_stock(
         )
 
     # OBV
-    obv_average = (
-        df["OBV"]
-        .rolling(20)
-        .mean()
-        .iloc[-1]
+    obvma = safe_float(
+        latest["OBVMA20"]
     )
 
     if (
-        not np.isnan(obv_average)
-        and latest["OBV"]
-        > obv_average
+        not np.isnan(obvma)
+        and
+        latest["OBV"]
+        > obvma
     ):
 
         structure_score += 3
@@ -1063,7 +1448,8 @@ def analyze_stock(
 
     if (
         not np.isnan(cmf)
-        and cmf > 0
+        and
+        cmf > 0
     ):
 
         structure_score += 2
@@ -1077,10 +1463,11 @@ def analyze_stock(
         15,
     )
 
-    # =====================================================
+    # --------------------------------------------------------
     # FUNDAMENTAL SCORE
-    # =====================================================
-    fund_score, fund_signals = (
+    # --------------------------------------------------------
+
+    fundamental_score, fund_signals = (
         score_fundamental(
             per,
             pbv,
@@ -1092,40 +1479,50 @@ def analyze_stock(
         fund_signals
     )
 
-    # =====================================================
-    # TECHNICAL TOTAL
-    # =====================================================
+    # --------------------------------------------------------
+    # COMPOSITE
+    # --------------------------------------------------------
+
     technical_total = min(
         tech_score
-        + momentum_score * 0.5
-        + structure_score * 0.4,
+        +
+        momentum_score * 0.5
+        +
+        structure_score * 0.4,
         60,
     )
 
-    # Market regime modifier
     regime_adjustment = {
+
         "Bullish": 3,
+
         "Neutral": 0,
+
         "Bearish": -3,
+
         "Unknown": 0,
+
     }.get(
         market_regime,
         0,
     )
 
-    composite = float(
+    composite_score = float(
         np.clip(
             technical_total
-            + fund_score
-            + regime_adjustment,
+            +
+            fundamental_score
+            +
+            regime_adjustment,
             0,
             100,
         )
     )
 
-    # =====================================================
+    # --------------------------------------------------------
     # SUPPORT / RESISTANCE
-    # =====================================================
+    # --------------------------------------------------------
+
     recent = df.tail(
         support_window
     )
@@ -1138,9 +1535,10 @@ def analyze_stock(
         recent["High"].max()
     )
 
-    # =====================================================
+    # --------------------------------------------------------
     # ATR
-    # =====================================================
+    # --------------------------------------------------------
+
     atr_value = safe_float(
         latest["ATR"]
     )
@@ -1155,12 +1553,14 @@ def analyze_stock(
             1,
         )
 
-    # =====================================================
+    # --------------------------------------------------------
     # BUY ZONE
-    # =====================================================
+    # --------------------------------------------------------
+
     buy_low = max(
         support,
-        price - 0.5 * atr_value,
+        price
+        - 0.5 * atr_value,
     )
 
     buy_high = min(
@@ -1179,27 +1579,29 @@ def analyze_stock(
 
         buy_high = price
 
-    # =====================================================
+    # --------------------------------------------------------
     # STOP LOSS
-    # =====================================================
+    # --------------------------------------------------------
+
     stop_loss = max(
         support
         - 0.25 * atr_value,
 
         price
-        - atr_mult * atr_value,
+        - atr_multiplier * atr_value,
     )
 
     if stop_loss >= price:
 
         stop_loss = (
             price
-            - atr_mult * atr_value
+            - atr_multiplier * atr_value
         )
 
-    # =====================================================
-    # TAKE PROFIT
-    # =====================================================
+    # --------------------------------------------------------
+    # TARGET
+    # --------------------------------------------------------
+
     risk_per_share = max(
         price - stop_loss,
         0.01,
@@ -1233,29 +1635,27 @@ def analyze_stock(
         / price
     ) * 100
 
-    # =====================================================
-    # SETUP CLASSIFICATION
-    # =====================================================
+    # --------------------------------------------------------
+    # SETUP
+    # --------------------------------------------------------
+
     if breakout:
 
         setup = "Breakout"
 
     elif (
         price
-        > safe_float(
-            latest["SMA_50"]
-        )
-        and latest["MACD"]
-        > latest["MACD_Signal"]
+        > latest["SMA50"]
+        and
+        latest["MACD"]
+        > latest["MACDSignal"]
     ):
 
         setup = "Trend Continuation"
 
     elif (
         price
-        >= safe_float(
-            latest["SMA_50"]
-        ) * 0.97
+        >= latest["SMA50"] * 0.97
     ):
 
         setup = "Pullback Watch"
@@ -1264,9 +1664,10 @@ def analyze_stock(
 
         setup = "Wait / Weak Setup"
 
-    # =====================================================
-    # RISK LABEL
-    # =====================================================
+    # --------------------------------------------------------
+    # RISK
+    # --------------------------------------------------------
+
     if risk_pct <= 4:
 
         risk_label = "Low"
@@ -1279,9 +1680,10 @@ def analyze_stock(
 
         risk_label = "High"
 
-    # =====================================================
+    # --------------------------------------------------------
     # DATA QUALITY
-    # =====================================================
+    # --------------------------------------------------------
+
     missing_fundamental = sum(
         np.isnan(value)
         for value in [
@@ -1307,83 +1709,101 @@ def analyze_stock(
 
         data_quality = "Good"
 
-    # =====================================================
-    # RETURN
-    # =====================================================
     return {
 
-        "Ticker": ticker,
+        "Ticker":
+            ticker,
 
-        "Name": fundamentals[
-            "longName"
-        ],
+        "Name":
+            fundamentals[
+                "longName"
+            ],
 
-        "Sector": fundamentals[
-            "sector"
-        ],
+        "Sector":
+            fundamentals[
+                "sector"
+            ],
 
-        "Industry": fundamentals[
-            "industry"
-        ],
+        "Industry":
+            fundamentals[
+                "industry"
+            ],
 
-        "Price": price,
+        "Price":
+            price,
 
-        "Score": round(
-            composite,
-            1,
-        ),
+        "Score":
+            round(
+                composite_score,
+                1,
+            ),
 
-        "TechnicalScore": round(
-            technical_total,
-            1,
-        ),
+        "TechnicalScore":
+            round(
+                technical_total,
+                1,
+            ),
 
-        "FundamentalScore": round(
-            fund_score,
-            1,
-        ),
+        "FundamentalScore":
+            round(
+                fundamental_score,
+                1,
+            ),
 
-        "MomentumScore": round(
-            momentum_score,
-            1,
-        ),
+        "MomentumScore":
+            round(
+                momentum_score,
+                1,
+            ),
 
-        "StructureScore": round(
-            structure_score,
-            1,
-        ),
+        "StructureScore":
+            round(
+                structure_score,
+                1,
+            ),
 
-        "PER": per,
+        "PER":
+            per,
 
-        "PBV": pbv,
+        "PBV":
+            pbv,
 
-        "ROE": roe_percent,
+        "ROE":
+            roe_percent,
 
-        "DividendYield": dividend_yield,
+        "DividendYield":
+            dividend_yield,
 
-        "RSI": safe_float(
-            latest["RSI"]
-        ),
+        "RSI":
+            safe_float(
+                latest["RSI"]
+            ),
 
-        "SMA50": safe_float(
-            latest["SMA_50"]
-        ),
+        "SMA50":
+            safe_float(
+                latest["SMA50"]
+            ),
 
-        "SMA200": safe_float(
-            latest["SMA_200"]
-        ),
+        "SMA200":
+            safe_float(
+                latest["SMA200"]
+            ),
 
-        "MACD": safe_float(
-            latest["MACD"]
-        ),
+        "MACD":
+            safe_float(
+                latest["MACD"]
+            ),
 
-        "MACDSignal": safe_float(
-            latest["MACD_Signal"]
-        ),
+        "MACDSignal":
+            safe_float(
+                latest["MACDSignal"]
+            ),
 
-        "VolumeRatio": volume_ratio,
+        "VolumeRatio":
+            volume_ratio,
 
-        "ATR": atr_value,
+        "ATR":
+            atr_value,
 
         "StockReturn60D":
             stock_return_60,
@@ -1394,30 +1814,41 @@ def analyze_stock(
         "RelativeStrength":
             relative_strength,
 
-        "Support": support,
+        "Support":
+            support,
 
-        "Resistance": resistance,
+        "Resistance":
+            resistance,
 
-        "BuyLow": buy_low,
+        "BuyLow":
+            buy_low,
 
-        "BuyHigh": buy_high,
+        "BuyHigh":
+            buy_high,
 
-        "StopLoss": stop_loss,
+        "StopLoss":
+            stop_loss,
 
-        "TP1": tp1,
+        "TP1":
+            tp1,
 
-        "TP2": tp2,
+        "TP2":
+            tp2,
 
-        "RRTP1": rr_tp1,
+        "RRTP1":
+            rr_tp1,
 
-        "RRTP2": rr_tp2,
+        "RRTP2":
+            rr_tp2,
 
-        "RiskPct": risk_pct,
+        "RiskPct":
+            risk_pct,
 
         "RiskLabel":
             risk_label,
 
-        "Setup": setup,
+        "Setup":
+            setup,
 
         "Breakout":
             breakout,
@@ -1428,30 +1859,37 @@ def analyze_stock(
         "Signals":
             signals,
 
-        "DF": df,
+        "DF":
+            df,
     }
 
 
-# =========================================================
-# SCREENING ENGINE
-# =========================================================
+# ============================================================
+# RUN SCREENING
+# ============================================================
+
 def run_screening(
     tickers,
     minimum_score,
     support_window,
     breakout_window,
     atr_mult,
+    sector_filter,
+    min_price,
+    min_avg_volume,
 ):
 
     market = (
         get_market_regime()
     )
 
-    market_df = market["df"]
+    market_df = market[
+        "df"
+    ]
 
-    market_regime = (
-        market["regime"]
-    )
+    market_regime = market[
+        "regime"
+    ]
 
     results = []
 
@@ -1480,30 +1918,121 @@ def run_screening(
 
         try:
 
+            # ------------------------------------------------
+            # Quick price pre-filter
+            # ------------------------------------------------
+
+            quick_df = get_price_data(
+                f"{ticker}.JK",
+                550,
+            )
+
+            if (
+                quick_df.empty
+                or len(quick_df) < 220
+            ):
+
+                errors.append(
+                    f"{ticker}: "
+                    "historical data tidak cukup"
+                )
+
+                progress.progress(
+                    index / total
+                )
+
+                continue
+
+            latest_close = safe_float(
+                quick_df[
+                    "Close"
+                ].iloc[-1]
+            )
+
+            avg_volume_20 = safe_float(
+                quick_df[
+                    "Volume"
+                ]
+                .rolling(20)
+                .mean()
+                .iloc[-1]
+            )
+
+            # Price filter
+            if (
+                not np.isnan(min_price)
+                and
+                latest_close < min_price
+            ):
+
+                progress.progress(
+                    index / total
+                )
+
+                continue
+
+            # Volume filter
+            if (
+                not np.isnan(
+                    min_avg_volume
+                )
+                and
+                avg_volume_20
+                < min_avg_volume
+            ):
+
+                progress.progress(
+                    index / total
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # Full analysis
+            # ------------------------------------------------
+
             result = analyze_stock(
                 ticker=ticker,
                 market_df=market_df,
                 market_regime=market_regime,
                 support_window=support_window,
                 breakout_window=breakout_window,
-                atr_mult=atr_mult,
+                atr_multiplier=atr_mult,
             )
 
             if result is None:
 
                 errors.append(
                     f"{ticker}: "
-                    "data tidak cukup / tidak tersedia"
+                    "analysis gagal"
                 )
 
-            elif (
-                result["Score"]
-                >= minimum_score
-            ):
+            else:
 
-                results.append(
-                    result
-                )
+                # Sector filter
+                if (
+                    sector_filter
+                    != "All"
+                    and
+                    result["Sector"]
+                    != sector_filter
+                ):
+
+                    progress.progress(
+                        index / total
+                    )
+
+                    continue
+
+                # Score filter
+                if (
+                    result["Score"]
+                    >= minimum_score
+                ):
+
+                    results.append(
+                        result
+                    )
 
         except Exception as exc:
 
@@ -1521,6 +2050,7 @@ def run_screening(
 
     progress.empty()
 
+    # Sort score
     results.sort(
         key=lambda x: x["Score"],
         reverse=True,
@@ -1533,9 +2063,10 @@ def run_screening(
     )
 
 
-# =========================================================
+# ============================================================
 # SUMMARY DATAFRAME
-# =========================================================
+# ============================================================
+
 def create_summary_dataframe(
     results
 ):
@@ -1570,6 +2101,9 @@ def create_summary_dataframe(
 
                 "Momentum":
                     stock["MomentumScore"],
+
+                "Sector":
+                    stock["Sector"],
 
                 "PER":
                     (
@@ -1620,9 +2154,7 @@ def create_summary_dataframe(
                             stock["VolumeRatio"]
                         )
                         else round(
-                            stock[
-                                "VolumeRatio"
-                            ],
+                            stock["VolumeRatio"],
                             2,
                         )
                     ),
@@ -1654,31 +2186,15 @@ def create_summary_dataframe(
             }
         )
 
-    return pd.DataFrame(rows)
-
-
-# =========================================================
-# CSV EXPORT
-# =========================================================
-def dataframe_to_csv(
-    dataframe
-):
-
-    buffer = io.StringIO()
-
-    dataframe.to_csv(
-        buffer,
-        index=False,
-    )
-
-    return buffer.getvalue().encode(
-        "utf-8"
+    return pd.DataFrame(
+        rows
     )
 
 
-# =========================================================
+# ============================================================
 # AI PROMPT
-# =========================================================
+# ============================================================
+
 def create_ai_prompt(
     stock,
     market,
@@ -1690,7 +2206,8 @@ def create_ai_prompt(
         if np.isnan(
             stock["PER"]
         )
-        else f"{stock['PER']:.2f}x"
+        else
+        f"{stock['PER']:.2f}x"
     )
 
     pbv_text = (
@@ -1698,7 +2215,8 @@ def create_ai_prompt(
         if np.isnan(
             stock["PBV"]
         )
-        else f"{stock['PBV']:.2f}x"
+        else
+        f"{stock['PBV']:.2f}x"
     )
 
     roe_text = (
@@ -1706,7 +2224,8 @@ def create_ai_prompt(
         if np.isnan(
             stock["ROE"]
         )
-        else f"{stock['ROE']:.2f}%"
+        else
+        f"{stock['ROE']:.2f}%"
     )
 
     volume_text = (
@@ -1714,24 +2233,22 @@ def create_ai_prompt(
         if np.isnan(
             stock["VolumeRatio"]
         )
-        else f"{stock['VolumeRatio']:.2f}x"
+        else
+        f"{stock['VolumeRatio']:.2f}x"
     )
 
     return f"""
-[SYSTEM INSTRUCTION:
-EXPERT HYBRID EQUITY RESEARCH ANALYST - IDX
-]
-
-Anda adalah analis pasar modal Indonesia yang melakukan
-research objektif berbasis data.
+[SYSTEM]
+Anda adalah Equity Research Analyst yang melakukan
+analisis objektif terhadap saham di Bursa Efek Indonesia.
 
 Jangan mengarang data yang tidak tersedia.
+Gunakan data yang diberikan.
+Pisahkan fakta, interpretasi dan ketidakpastian.
 
-Jelaskan keterbatasan data jika diperlukan.
-
-=========================================================
-INSTRUMEN
-=========================================================
+==================================================
+STOCK
+==================================================
 
 Ticker:
 {stock["Ticker"]}
@@ -1739,19 +2256,18 @@ Ticker:
 Nama:
 {stock["Name"]}
 
-Sektor:
+Sector:
 {stock["Sector"]}
 
-Industri:
+Industry:
 {stock["Industry"]}
 
-Harga terakhir:
+Harga:
 {format_rupiah(stock["Price"])}
 
-
-=========================================================
+==================================================
 FUNDAMENTAL
-=========================================================
+==================================================
 
 PER:
 {per_text}
@@ -1765,12 +2281,11 @@ ROE:
 Dividend Yield:
 {stock["DividendYield"]:.2f}%
 
+==================================================
+TECHNICAL
+==================================================
 
-=========================================================
-TEKNIKAL
-=========================================================
-
-RSI 14:
+RSI:
 {stock["RSI"]:.2f}
 
 SMA 50:
@@ -1791,35 +2306,44 @@ Volume Ratio:
 ATR:
 {stock["ATR"]:.2f}
 
-Return 60D:
+==================================================
+RELATIVE STRENGTH
+==================================================
+
+Return Saham 60D:
 {
     "N/A"
     if np.isnan(stock["StockReturn60D"])
     else f"{stock['StockReturn60D']:.2f}%"
 }
 
-Relative Strength vs IHSG:
+Return IHSG 60D:
+{
+    "N/A"
+    if np.isnan(stock["IHSGReturn60D"])
+    else f"{stock['IHSGReturn60D']:.2f}%"
+}
+
+Relative Strength:
 {
     "N/A"
     if np.isnan(stock["RelativeStrength"])
     else f"{stock['RelativeStrength']:.2f}%"
 }
 
-
-=========================================================
+==================================================
 MARKET REGIME
-=========================================================
+==================================================
 
-IHSG Regime:
+IHSG:
 {market["regime"]}
 
-IHSG Regime Score:
+Market Score:
 {market["score"]:.1f}/100
 
-
-=========================================================
-PRICE STRUCTURE
-=========================================================
+==================================================
+STRUCTURE
+==================================================
 
 Setup:
 {stock["Setup"]}
@@ -1837,10 +2361,9 @@ Support:
 Resistance:
 {stock["Resistance"]:.2f}
 
-
-=========================================================
-RISK / REWARD ENGINE
-=========================================================
+==================================================
+RISK / REWARD
+==================================================
 
 Buy Zone:
 {stock["BuyLow"]:.2f}
@@ -1865,10 +2388,9 @@ R:R TP1:
 R:R TP2:
 1:{stock["RRTP2"]:.2f}
 
-
-=========================================================
-COMPOSITE SCORE
-=========================================================
+==================================================
+SCORE
+==================================================
 
 Technical:
 {stock["TechnicalScore"]}/60
@@ -1879,106 +2401,312 @@ Fundamental:
 Composite:
 {stock["Score"]}/100
 
+==================================================
+TASK
+==================================================
 
-=========================================================
-HORIZON
-=========================================================
+Buat analisis terstruktur:
 
-Research horizon:
-{horizon_days} hari bursa.
+1. Ringkasan kondisi saham.
 
+2. Analisis fundamental:
+   - PER
+   - PBV
+   - ROE
+   - Dividend Yield
 
-=========================================================
-TUGAS AI
-=========================================================
+3. Analisis teknikal:
+   - Trend
+   - RSI
+   - MACD
+   - Volume
+   - SMA50
+   - SMA200
 
-1. Jelaskan trend dan momentum.
+4. Analisis relative strength terhadap IHSG.
 
-2. Evaluasi fundamental:
-   PER
-   PBV
-   ROE
-   Dividend Yield
+5. Analisis support dan resistance.
 
-3. Pertimbangkan karakteristik sektor ketika
-   menginterpretasikan valuasi.
-
-4. Jelaskan apakah setup lebih dekat ke:
+6. Evaluasi setup:
    - Breakout
    - Trend Continuation
-   - Pullback Watch
-   - Wait / Weak Setup
+   - Pullback
+   - Wait
 
-5. Evaluasi:
-   - Support
-   - Resistance
-   - Buy Zone
-   - Stop Loss
-   - TP1
-   - TP2
-   - Risk/Reward
+7. Evaluasi risk/reward.
 
-6. Buat tiga skenario:
+8. Buat tiga skenario:
 
-   BULL
-   Trigger
-   Target / scenario
+BULL:
+- trigger
+- area penting
+- potensi target
 
-   BASE
-   Trigger
-   Target / scenario
+BASE:
+- kondisi yang perlu bertahan
 
-   BEAR
-   Trigger
-   Invalidation
+BEAR:
+- trigger negatif
+- invalidation
 
-7. Jelaskan risiko utama.
+9. Jelaskan risiko utama.
 
-8. Sebutkan data tambahan yang harus diverifikasi
-   sebelum keputusan dibuat.
+10. Beri daftar data tambahan yang perlu diverifikasi.
 
-9. Jangan memberikan kepastian keuntungan.
-
-10. Jangan menyamakan composite score dengan
-    rekomendasi investasi personal.
-
-Tampilkan dalam Markdown profesional.
+Jangan memberikan kepastian keuntungan.
+Jangan mengarang berita atau katalis yang tidak tersedia.
 """
 
 
-# =========================================================
-# SESSION STATE
-# =========================================================
-if "results" not in st.session_state:
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.header(
+    "⚙️ Screening Parameters"
+)
+
+universe_mode = st.sidebar.radio(
+    "Universe Saham",
+    [
+        "Default Watchlist",
+        "Input Manual",
+        "Seluruh IDX",
+    ],
+)
+
+# ------------------------------------------------------------
+# Watchlist
+# ------------------------------------------------------------
+
+if universe_mode == "Default Watchlist":
+
+    selected_tickers = (
+        st.sidebar.multiselect(
+            "Pilih Saham",
+            options=DEFAULT_TICKERS,
+            default=DEFAULT_TICKERS[:12],
+        )
+    )
+
+# ------------------------------------------------------------
+# Manual
+# ------------------------------------------------------------
+
+elif universe_mode == "Input Manual":
+
+    manual_text = (
+        st.sidebar.text_area(
+            "Masukkan kode saham",
+            placeholder=(
+                "Contoh:\n"
+                "ACES,GJTL,SMGR,ERAA\n"
+                "atau satu ticker per baris"
+            ),
+            height=120,
+        )
+    )
+
+    # Support commas / spaces / newline
+    manual_tickers = re.split(
+        r"[\s,;]+",
+        manual_text,
+    )
+
+    selected_tickers = sorted(
+        {
+            clean_ticker(
+                ticker
+            )
+            for ticker in manual_tickers
+            if clean_ticker(
+                ticker
+            )
+        }
+    )
+
+# ------------------------------------------------------------
+# Entire IDX
+# ------------------------------------------------------------
+
+else:
+
+    if not st.session_state[
+        "universe"
+    ]:
+
+        with st.spinner(
+            "Memuat daftar saham IDX..."
+        ):
+
+            st.session_state[
+                "universe"
+            ] = (
+                get_all_idx_tickers()
+            )
+
+    all_idx_tickers = (
+        st.session_state[
+            "universe"
+        ]
+    )
+
+    if all_idx_tickers:
+
+        selected_tickers = (
+            all_idx_tickers
+        )
+
+        st.sidebar.success(
+            f"{len(all_idx_tickers)} "
+            "ticker berhasil dimuat"
+        )
+
+    else:
+
+        selected_tickers = []
+
+        st.sidebar.error(
+            "Daftar IDX tidak berhasil "
+            "dibaca otomatis. Gunakan "
+            "'Input Manual'."
+        )
+
+# ------------------------------------------------------------
+# Filters
+# ------------------------------------------------------------
+
+st.sidebar.divider()
+
+min_score = st.sidebar.slider(
+    "Minimum Composite Score",
+    0,
+    100,
+    55,
+)
+
+min_price = st.sidebar.number_input(
+    "Minimum Harga",
+    min_value=0.0,
+    value=0.0,
+    step=100.0,
+)
+
+min_avg_volume = st.sidebar.number_input(
+    "Minimum Average Volume 20D",
+    min_value=0.0,
+    value=0.0,
+    step=100000.0,
+    help=(
+        "Gunakan 0 untuk menonaktifkan filter."
+    ),
+)
+
+support_lookback = st.sidebar.slider(
+    "Support / Resistance Lookback",
+    20,
+    120,
+    60,
+    5,
+)
+
+breakout_lookback = st.sidebar.slider(
+    "Breakout Lookback",
+    10,
+    100,
+    20,
+    5,
+)
+
+atr_multiplier = st.sidebar.slider(
+    "ATR Multiplier",
+    0.5,
+    3.0,
+    1.5,
+    0.1,
+)
+
+holding_days = st.sidebar.slider(
+    "Swing Horizon / Trading Days",
+    10,
+    90,
+    60,
+    5,
+)
+
+
+# ============================================================
+# SECTOR FILTER OPTIONS
+# ============================================================
+
+SECTOR_OPTIONS = [
+    "All",
+    "Basic Materials",
+    "Communication Services",
+    "Consumer Cyclical",
+    "Consumer Defensive",
+    "Energy",
+    "Financial Services",
+    "Healthcare",
+    "Industrials",
+    "Real Estate",
+    "Technology",
+    "Utilities",
+    "Unknown",
+]
+
+sector_filter = st.sidebar.selectbox(
+    "Filter Sector",
+    SECTOR_OPTIONS,
+)
+
+
+# ============================================================
+# CACHE / RESET
+# ============================================================
+
+st.sidebar.divider()
+
+if st.sidebar.button(
+    "🔄 Refresh IDX Universe"
+):
+
+    get_all_idx_tickers.clear()
+
+    st.session_state[
+        "universe"
+    ] = []
+
+    st.rerun()
+
+
+if st.sidebar.button(
+    "🧹 Clear All Cache"
+):
+
+    st.cache_data.clear()
 
     st.session_state[
         "results"
     ] = []
 
-
-if "errors" not in st.session_state:
-
     st.session_state[
         "errors"
     ] = []
 
-
-if "market" not in st.session_state:
-
     st.session_state[
-        "market"
-    ] = {
-        "regime": "Unknown",
-        "score": 50,
-        "df": pd.DataFrame(),
-    }
+        "universe"
+    ] = []
+
+    st.rerun()
 
 
-# =========================================================
+# ============================================================
 # RUN BUTTON
-# =========================================================
+# ============================================================
+
 run_clicked = st.button(
-    "🚀 Jalankan Hybrid Screening",
+    "🚀 JALANKAN HYBRID SCREENING",
     type="primary",
     use_container_width=True,
 )
@@ -1989,13 +2717,13 @@ if run_clicked:
     if not selected_tickers:
 
         st.warning(
-            "Pilih minimal satu ticker IDX terlebih dahulu."
+            "Tidak ada ticker untuk dianalisis."
         )
 
     else:
 
         with st.spinner(
-            "Mengunduh data dan menjalankan screening..."
+            "Menjalankan screening..."
         ):
 
             (
@@ -2003,11 +2731,30 @@ if run_clicked:
                 errors,
                 market,
             ) = run_screening(
-                tickers=selected_tickers,
-                minimum_score=min_score,
-                support_window=support_lookback,
-                breakout_window=breakout_lookback,
-                atr_mult=atr_multiplier,
+
+                tickers=
+                selected_tickers,
+
+                minimum_score=
+                min_score,
+
+                support_window=
+                support_lookback,
+
+                breakout_window=
+                breakout_lookback,
+
+                atr_mult=
+                atr_multiplier,
+
+                sector_filter=
+                sector_filter,
+
+                min_price=
+                min_price,
+
+                min_avg_volume=
+                min_avg_volume,
             )
 
             st.session_state[
@@ -2023,9 +2770,10 @@ if run_clicked:
             ] = market
 
 
-# =========================================================
-# LOAD STATE
-# =========================================================
+# ============================================================
+# LOAD RESULTS
+# ============================================================
+
 results = st.session_state[
     "results"
 ]
@@ -2039,13 +2787,16 @@ market = st.session_state[
 ]
 
 
-# =========================================================
-# MARKET HEADER
-# =========================================================
-m1, m2, m3, m4 = st.columns(4)
+# ============================================================
+# MARKET STATUS
+# ============================================================
+
+m1, m2, m3, m4 = (
+    st.columns(4)
+)
 
 m1.metric(
-    "Market Regime",
+    "IHSG Market Regime",
     market.get(
         "regime",
         "Unknown",
@@ -2053,8 +2804,11 @@ m1.metric(
 )
 
 m2.metric(
-    "IHSG Regime Score",
-    f"{market.get('score', 50):.0f}/100",
+    "Market Score",
+    (
+        f"{market.get('score', 50):.0f}"
+        "/100"
+    ),
 )
 
 m3.metric(
@@ -2068,31 +2822,47 @@ m4.metric(
 )
 
 
-# =========================================================
-# EMPTY STATE
-# =========================================================
+# ============================================================
+# EMPTY
+# ============================================================
+
 if not results:
 
     st.info(
-        "Klik **Jalankan Hybrid Screening** "
-        "untuk memulai."
+        "Belum ada hasil. "
+        "Pilih universe kemudian klik "
+        "'JALANKAN HYBRID SCREENING'."
     )
+
+    if errors:
+
+        with st.expander(
+            f"⚠️ Data issues ({len(errors)})"
+        ):
+
+            for error in errors:
+
+                st.write(
+                    f"- {error}"
+                )
 
     st.stop()
 
 
-# =========================================================
-# SUCCESS
-# =========================================================
+# ============================================================
+# RESULT HEADER
+# ============================================================
+
 st.success(
-    f"Ditemukan {len(results)} saham "
-    f"dengan score ≥ {min_score}."
+    f"{len(results)} saham lolos "
+    f"minimum score {min_score}."
 )
 
 
-# =========================================================
+# ============================================================
 # ERRORS
-# =========================================================
+# ============================================================
+
 if errors:
 
     with st.expander(
@@ -2106,9 +2876,10 @@ if errors:
             )
 
 
-# =========================================================
+# ============================================================
 # RANKING
-# =========================================================
+# ============================================================
+
 st.subheader(
     "🏆 Ranking Screening"
 )
@@ -2123,72 +2894,46 @@ st.dataframe(
     summary_df,
     use_container_width=True,
     hide_index=True,
-    column_config={
-
-        "Score":
-            st.column_config.NumberColumn(
-                "Score",
-                format="%.1f",
-            ),
-
-        "Technical":
-            st.column_config.NumberColumn(
-                "Technical",
-                format="%.1f",
-            ),
-
-        "Fundamental":
-            st.column_config.NumberColumn(
-                "Fundamental",
-                format="%.1f",
-            ),
-
-        "Momentum":
-            st.column_config.NumberColumn(
-                "Momentum",
-                format="%.1f",
-            ),
-
-        "Price":
-            st.column_config.NumberColumn(
-                "Price",
-                format="%.2f",
-            ),
-    },
 )
 
 
-# =========================================================
-# EXPORT
-# =========================================================
+# ============================================================
+# EXPORT CSV
+# ============================================================
+
+csv_data = (
+    summary_df
+    .to_csv(
+        index=False
+    )
+    .encode(
+        "utf-8"
+    )
+)
+
 st.download_button(
-    "⬇️ Download Screening CSV",
-
-    data=dataframe_to_csv(
-        summary_df
-    ),
-
+    "⬇️ Download CSV",
+    data=csv_data,
     file_name=(
-        f"idx_screener_"
+        "idx_screener_"
         f"{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
     ),
-
     mime="text/csv",
 )
 
 
-# =========================================================
-# DETAIL
-# =========================================================
+# ============================================================
+# DETAIL SELECTOR
+# ============================================================
+
 st.divider()
 
 st.subheader(
-    "🔎 Analisis Detail"
+    "🔎 Analisis Detail Saham"
 )
 
 selected_stock = st.selectbox(
-    "Pilih saham",
-
+    "Pilih Saham",
     options=[
         result["Ticker"]
         for result in results
@@ -2200,45 +2945,47 @@ stock = next(
     result
     for result in results
     if result["Ticker"]
-    == selected_stock
+    ==
+    selected_stock
 )
 
 
-# =========================================================
-# TOP METRICS
-# =========================================================
-d1, d2, d3, d4, d5 = st.columns(5)
+# ============================================================
+# STOCK SUMMARY
+# ============================================================
 
-d1.metric(
+s1, s2, s3, s4, s5 = (
+    st.columns(5)
+)
+
+s1.metric(
     "Harga",
     format_rupiah(
         stock["Price"]
     ),
 )
 
-d2.metric(
-    "Score",
+s2.metric(
+    "Composite Score",
     f"{stock['Score']:.1f}/100",
 )
 
-d3.metric(
+s3.metric(
     "Setup",
     stock["Setup"],
 )
 
-d4.metric(
+s4.metric(
     "Risk",
     stock["RiskLabel"],
 )
 
-d5.metric(
-    "Relative Strength",
+s5.metric(
+    "RS vs IHSG",
     (
         "N/A"
         if np.isnan(
-            stock[
-                "RelativeStrength"
-            ]
+            stock["RelativeStrength"]
         )
         else
         f"{stock['RelativeStrength']:.2f}%"
@@ -2246,22 +2993,23 @@ d5.metric(
 )
 
 
-# =========================================================
+# ============================================================
 # FUNDAMENTAL
-# =========================================================
+# ============================================================
+
 st.markdown(
     "### 💰 Fundamental"
 )
 
-f1, f2, f3, f4, f5 = st.columns(5)
+f1, f2, f3, f4, f5 = (
+    st.columns(5)
+)
 
 f1.metric(
     "PER",
     (
         "N/A"
-        if np.isnan(
-            stock["PER"]
-        )
+        if np.isnan(stock["PER"])
         else
         f"{stock['PER']:.2f}x"
     ),
@@ -2271,9 +3019,7 @@ f2.metric(
     "PBV",
     (
         "N/A"
-        if np.isnan(
-            stock["PBV"]
-        )
+        if np.isnan(stock["PBV"])
         else
         f"{stock['PBV']:.2f}x"
     ),
@@ -2283,9 +3029,7 @@ f3.metric(
     "ROE",
     (
         "N/A"
-        if np.isnan(
-            stock["ROE"]
-        )
+        if np.isnan(stock["ROE"])
         else
         f"{stock['ROE']:.2f}%"
     ),
@@ -2298,18 +3042,21 @@ f4.metric(
 
 f5.metric(
     "Sector",
-    stock["Sector"][:20],
+    stock["Sector"],
 )
 
 
-# =========================================================
-# TECHNICAL
-# =========================================================
+# ============================================================
+# TECHNICAL METRICS
+# ============================================================
+
 st.markdown(
-    "### 📈 Technical Dashboard"
+    "### 📈 Technical"
 )
 
-t1, t2, t3, t4, t5, t6 = st.columns(6)
+t1, t2, t3, t4, t5, t6 = (
+    st.columns(6)
+)
 
 t1.metric(
     "RSI",
@@ -2332,7 +3079,7 @@ t4.metric(
 )
 
 t5.metric(
-    "Volume x",
+    "Volume Ratio",
     (
         "N/A"
         if np.isnan(
@@ -2349,16 +3096,16 @@ t6.metric(
 )
 
 
-# =========================================================
-# CANDLESTICK CHART
-# =========================================================
+# ============================================================
+# PRICE CHART
+# ============================================================
+
 chart_df = (
     stock["DF"]
     .tail(180)
 )
 
 fig = go.Figure()
-
 
 fig.add_trace(
     go.Candlestick(
@@ -2381,10 +3128,9 @@ fig.add_trace(
             "Close"
         ],
 
-        name="OHLC",
+        name="Price",
     )
 )
-
 
 fig.add_trace(
     go.Scatter(
@@ -2392,7 +3138,7 @@ fig.add_trace(
         x=chart_df.index,
 
         y=chart_df[
-            "SMA_20"
+            "SMA20"
         ],
 
         name="SMA 20",
@@ -2403,14 +3149,13 @@ fig.add_trace(
     )
 )
 
-
 fig.add_trace(
     go.Scatter(
 
         x=chart_df.index,
 
         y=chart_df[
-            "SMA_50"
+            "SMA50"
         ],
 
         name="SMA 50",
@@ -2421,14 +3166,13 @@ fig.add_trace(
     )
 )
 
-
 fig.add_trace(
     go.Scatter(
 
         x=chart_df.index,
 
         y=chart_df[
-            "SMA_200"
+            "SMA200"
         ],
 
         name="SMA 200",
@@ -2445,10 +3189,8 @@ fig.add_hline(
     y=stock[
         "Support"
     ],
-
-    annotation_text="Support",
-
     line_dash="dot",
+    annotation_text="Support",
 )
 
 
@@ -2457,22 +3199,18 @@ fig.add_hline(
     y=stock[
         "Resistance"
     ],
-
-    annotation_text="Resistance",
-
     line_dash="dot",
+    annotation_text="Resistance",
 )
 
 
-# Stop loss
+# Stop
 fig.add_hline(
     y=stock[
         "StopLoss"
     ],
-
-    annotation_text="Engine SL",
-
     line_dash="dash",
+    annotation_text="SL",
 )
 
 
@@ -2481,10 +3219,8 @@ fig.add_hline(
     y=stock[
         "TP1"
     ],
-
-    annotation_text="TP1",
-
     line_dash="dash",
+    annotation_text="TP1",
 )
 
 
@@ -2493,18 +3229,16 @@ fig.add_hline(
     y=stock[
         "TP2"
     ],
-
-    annotation_text="TP2",
-
     line_dash="dash",
+    annotation_text="TP2",
 )
 
 
 fig.update_layout(
 
     title=(
-        f"Candlestick & Trend — "
-        f"{selected_stock}"
+        f"{selected_stock} — "
+        "Price Structure"
     ),
 
     xaxis_rangeslider_visible=False,
@@ -2521,51 +3255,42 @@ fig.update_layout(
     ),
 )
 
-
 st.plotly_chart(
     fig,
     use_container_width=True,
 )
 
 
-# =========================================================
-# RSI CHART
-# =========================================================
-rsi_df = (
-    stock["DF"]
-    .tail(180)
-)
+# ============================================================
+# RSI
+# ============================================================
 
 rsi_fig = go.Figure()
-
 
 rsi_fig.add_trace(
     go.Scatter(
 
-        x=rsi_df.index,
+        x=chart_df.index,
 
-        y=rsi_df[
+        y=chart_df[
             "RSI"
         ],
 
-        name="RSI 14",
+        name="RSI",
     )
 )
-
 
 rsi_fig.add_hline(
     y=70,
     line_dash="dot",
-    annotation_text="RSI 70",
+    annotation_text="70",
 )
-
 
 rsi_fig.add_hline(
     y=30,
     line_dash="dot",
-    annotation_text="RSI 30",
+    annotation_text="30",
 )
-
 
 rsi_fig.update_layout(
 
@@ -2575,9 +3300,13 @@ rsi_fig.update_layout(
 
     height=300,
 
-    yaxis_title="RSI",
+    yaxis=dict(
+        range=[
+            0,
+            100,
+        ]
+    ),
 )
-
 
 st.plotly_chart(
     rsi_fig,
@@ -2585,11 +3314,12 @@ st.plotly_chart(
 )
 
 
-# =========================================================
+# ============================================================
 # SIGNAL + RISK REWARD
-# =========================================================
+# ============================================================
+
 left, right = st.columns(
-    [1, 1]
+    2
 )
 
 
@@ -2599,16 +3329,24 @@ with left:
         "### 🚦 Signals"
     )
 
-    for signal in stock[
-        "Signals"
-    ][:12]:
+    if stock["Signals"]:
+
+        for signal in stock[
+            "Signals"
+        ][:15]:
+
+            st.write(
+                f"• {signal}"
+            )
+
+    else:
 
         st.write(
-            f"• {signal}"
+            "Tidak ada signal khusus."
         )
 
     st.caption(
-        f"Data quality: "
+        "Data quality: "
         f"{stock['DataQuality']}"
     )
 
@@ -2616,7 +3354,7 @@ with left:
 with right:
 
     st.markdown(
-        "### 🎯 Risk / Reward Engine"
+        "### 🎯 Risk / Reward"
     )
 
     rr_df = pd.DataFrame(
@@ -2633,19 +3371,12 @@ with right:
             ],
 
             "Price": [
-
                 stock["BuyLow"],
-
                 stock["BuyHigh"],
-
                 stock["Support"],
-
                 stock["Resistance"],
-
                 stock["StopLoss"],
-
                 stock["TP1"],
-
                 stock["TP2"],
             ],
         }
@@ -2658,25 +3389,20 @@ with right:
     )
 
     st.caption(
-        f"Risk to SL: "
-        f"{stock['RiskPct']:.2f}% "
-        f"| R:R TP1 1:{stock['RRTP1']:.2f} "
-        f"| R:R TP2 1:{stock['RRTP2']:.2f}"
+        f"Risk: {stock['RiskPct']:.2f}% "
+        f"| R:R TP1 = 1:{stock['RRTP1']:.2f} "
+        f"| R:R TP2 = 1:{stock['RRTP2']:.2f}"
     )
 
 
-# =========================================================
+# ============================================================
 # AI PROMPT
-# =========================================================
+# ============================================================
+
 st.divider()
 
 st.subheader(
-    "🤖 Master Prompt AI"
-)
-
-st.caption(
-    "Prompt memakai output engine analitik. "
-    "AI menjadi layer interpretasi, bukan sumber data mentah."
+    "🤖 AI Equity Analyst Prompt"
 )
 
 ai_prompt = create_ai_prompt(
@@ -2690,31 +3416,29 @@ st.code(
     language="markdown",
 )
 
-
 st.download_button(
-
     "⬇️ Download AI Prompt",
-
     data=ai_prompt.encode(
         "utf-8"
     ),
-
     file_name=(
         f"AI_prompt_"
         f"{stock['Ticker']}.txt"
     ),
-
     mime="text/plain",
 )
 
 
-# =========================================================
-# DISCLAIMER
-# =========================================================
+# ============================================================
+# FOOTER
+# ============================================================
+
 st.divider()
 
 st.caption(
-    "Disclaimer: aplikasi ini adalah alat screening/research. "
-    "Data provider eksternal dapat terlambat, tidak lengkap, atau berubah. "
-    "Score dan level risk/reward bukan jaminan hasil dan bukan nasihat investasi personal."
+    "Disclaimer: aplikasi ini adalah alat research/screening. "
+    "Data dari provider eksternal dapat terlambat, tidak lengkap, "
+    "atau berubah. Score, entry, SL dan target merupakan hasil "
+    "formula aplikasi dan bukan jaminan hasil investasi."
 )
+```
