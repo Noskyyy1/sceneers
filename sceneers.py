@@ -1,9 +1,4 @@
 ```python
-# ============================================================
-# IDX STOCK SCREENER
-# Technical + Fundamental + Market Regime + Relative Strength
-# Designed for VS Code + GitHub + Streamlit
-# ============================================================
 
 import io
 import re
