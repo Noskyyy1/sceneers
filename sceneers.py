@@ -3,337 +3,199 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+from pathlib import Path
 
-st.set_page_config(page_title="IDX Stock Screener", page_icon="📈", layout="wide")
+st.set_page_config(page_title="IDX Analytics Pro", page_icon="📈", layout="wide")
 
-st.title("📈 IDX Stock Screener")
-st.caption("Technical + Fundamental screening using Yahoo Finance data.")
+st.markdown("""
+<style>
+.stApp{background:#0b1220}.block-container{max-width:1500px;padding-top:1.2rem}
+[data-testid="stSidebar"]{background:#0f172a;border-right:1px solid #263653}
+.hero{background:linear-gradient(135deg,#111c31,#0f172a);border:1px solid #263653;border-radius:18px;padding:24px 28px;margin-bottom:18px}
+.hero h1{margin:0;font-size:2.2rem}.hero p{color:#94a3b8;margin:6px 0 0}
+.card{background:#111c31;border:1px solid #263653;border-radius:15px;padding:16px 18px;min-height:100px}
+.label{color:#94a3b8;font-size:.8rem}.value{color:#f8fafc;font-size:1.55rem;font-weight:800;margin-top:6px}
+.note{color:#64748b;font-size:.75rem}.signal{background:#111c31;border:1px solid #263653;border-radius:10px;padding:10px;margin:6px 0}
+</style>
+""", unsafe_allow_html=True)
 
-DEFAULT_TICKERS = [
-    "BBCA", "BBRI", "BMRI", "BBNI", "BRIS", "TLKM", "ASII", "UNVR",
-    "ICBP", "AMRT", "ADRO", "PTBA", "ITMG", "PGAS", "ANTM", "INCO",
-    "CPIN", "MEDC", "MDKA", "AKRA", "AMMN", "BREN", "TPIA", "GOTO"
-]
-
-
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
-
-
-def normalize_columns(df):
-    if df is None or df.empty:
-        return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    required = ["Open", "High", "Low", "Close", "Volume"]
-    if not all(c in df.columns for c in required):
-        return pd.DataFrame()
-    return df.dropna(subset=["Close"]).copy()
-
+STARTER = sorted(set("""AADI ACES ADCP ADHI ADMR ADRO AGRO AKRA AMMN AMRT ANTM APLN ARCI ARTO ASII ASLC ASSA AUTO AVIA BBCA BBHI BBNI BBRI BBTN BCAP BDMN BELI BFIN BHIT BIKA BIRD BJBR BJTM BKSL BMRI BNGA BREN BRIS BRMS BSDE BTPS BUKA BUMI BUVA CARS CBRE CDIA CENT CFIN CINT CLEO CMRY CPIN CTRA CYBR DEWA DOID DSNG ELSA EMTK ENRG ERAA ESSA EXCL FAST FILM FREN GGRM GIAA GJTL GOTO HEAL HMSP HRUM ICBP IMAS INCO INDF INDY INKP INTP ISAT ITMG JSMR JPFA KBLI KIJA KLBF KPIG KRAS LINK LPKR LSIP MAPA MAPI MARK MBMA MCAS MDKA MEDC MIKA MLPL MNCN MPMX MTEL MYOR NCKL NISP PANI PGAS PGEO PNBN PNLF PPRE PPRO PTBA PTPP PTRO PWON RAJA RALS SCMA SIDO SMBR SMGR SMRA SMSM SRTG SSIA STAA SUPR TAPG TBIG TINS TKIM TLKM TOWR TPIA TRIM TUGU ULTJ UNTR UNVR WIKA WTON ZYRX""".split()))
+INDEXES={
+"LQ45 (starter)":"ACES ADRO AKRA AMMN AMRT ANTM ASII BBCA BBNI BBRI BBTN BMRI BRIS CPIN EMTK GOTO ICBP INCO INDF INKP ISAT ITMG JSMR KLBF MAPI MBMA MDKA MEDC PGAS PGEO PTBA PTRO SMGR TLKM TOWR TPIA UNTR UNVR".split(),
+"IDX30 (starter)":"ADRO AKRA AMMN AMRT ANTM ASII BBCA BBNI BBRI BBTN BMRI BRIS CPIN GOTO ICBP INDF INCO ISAT ITMG KLBF MDKA PGAS PTBA SMGR TLKM TPIA UNTR UNVR".split(),
+}
 
 @st.cache_data(ttl=900, show_spinner=False)
-def get_price_data(ticker):
-    try:
-        end = datetime.now()
-        start = end - timedelta(days=420)
-        df = yf.download(
-            f"{ticker}.JK",
-            start=start,
-            end=end,
-            progress=False,
-            auto_adjust=False,
-            threads=False,
-        )
-        df = normalize_columns(df)
-        return df if len(df) >= 100 else pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
+def load_universe():
+    p=Path(__file__).parent/"data"/"idx_universe.csv"
+    if p.exists():
+        try:
+            d=pd.read_csv(p); c="Ticker" if "Ticker" in d.columns else d.columns[0]
+            x=d[c].dropna().astype(str).str.upper().str.replace(".JK","",regex=False).str.strip()
+            if len(x): return sorted(set(x))
+        except Exception: pass
+    return STARTER
 
+@st.cache_data(ttl=900, show_spinner=False)
+def history(ticker):
+    try:
+        raw=yf.download(f"{ticker}.JK", start=datetime.now()-timedelta(days=430), end=datetime.now(),
+                        progress=False, auto_adjust=False, threads=False)
+        if isinstance(raw.columns,pd.MultiIndex):
+            raw.columns=raw.columns.get_level_values(0)
+        req=["Open","High","Low","Close","Volume"]
+        if raw.empty or not all(c in raw.columns for c in req): return pd.DataFrame()
+        d=raw.dropna(subset=["Close"]).copy()
+        for c in req: d[c]=pd.to_numeric(d[c],errors="coerce")
+        d["SMA20"]=d.Close.rolling(20).mean(); d["SMA50"]=d.Close.rolling(50).mean(); d["SMA200"]=d.Close.rolling(200).mean()
+        delta=d.Close.diff(); gain=delta.clip(lower=0); loss=-delta.clip(upper=0)
+        ag=gain.ewm(alpha=1/14,adjust=False,min_periods=14).mean(); al=loss.ewm(alpha=1/14,adjust=False,min_periods=14).mean()
+        d["RSI"]=100-(100/(1+(ag/al.replace(0,np.nan))))
+        e12=d.Close.ewm(span=12,adjust=False).mean(); e26=d.Close.ewm(span=26,adjust=False).mean()
+        d["MACD"]=e12-e26; d["MACDSignal"]=d.MACD.ewm(span=9,adjust=False).mean(); d["MACDHist"]=d.MACD-d.MACDSignal
+        d["VolSMA20"]=d.Volume.rolling(20).mean()
+        tr=pd.concat([d.High-d.Low,(d.High-d.Close.shift()).abs(),(d.Low-d.Close.shift()).abs()],axis=1).max(axis=1)
+        d["ATR14"]=tr.rolling(14).mean()
+        return d
+    except Exception: return pd.DataFrame()
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def get_fundamental(ticker):
-    data = {
-        "name": ticker,
-        "sector": "N/A",
-        "industry": "N/A",
-        "per": None,
-        "pbv": None,
-        "roe": None,
-        "dividend": 0.0,
-    }
+def fundamentals(ticker):
+    out={"Company":ticker,"Sector":"N/A","Industry":"N/A","PER":None,"PBV":None,"ROE":None,"Div":0.0,"MarketCap":None}
     try:
-        info = yf.Ticker(f"{ticker}.JK").info
-        data["name"] = info.get("longName") or info.get("shortName") or ticker
-        data["sector"] = info.get("sector") or "N/A"
-        data["industry"] = info.get("industry") or "N/A"
-        data["per"] = info.get("trailingPE")
-        data["pbv"] = info.get("priceToBook")
-        data["roe"] = info.get("returnOnEquity")
-        data["dividend"] = info.get("dividendYield") or 0.0
-    except Exception:
-        pass
-    return data
+        i=yf.Ticker(f"{ticker}.JK").info
+        out.update({"Company":i.get("longName") or i.get("shortName") or ticker,"Sector":i.get("sector") or "N/A","Industry":i.get("industry") or "N/A","PER":i.get("trailingPE"),"PBV":i.get("priceToBook"),"ROE":i.get("returnOnEquity"),"Div":i.get("dividendYield") or 0.0,"MarketCap":i.get("marketCap")})
+    except Exception: pass
+    return out
 
+def num(x):
+    try:
+        x=float(x); return x if np.isfinite(x) else None
+    except Exception: return None
 
 def analyze(ticker):
-    ticker = ticker.strip().upper().replace(".JK", "")
-    df = get_price_data(ticker)
-    if df.empty:
-        return None
-
-    df["SMA20"] = df["Close"].rolling(20).mean()
-    df["SMA50"] = df["Close"].rolling(50).mean()
-    df["SMA200"] = df["Close"].rolling(200).mean()
-
-    ema12 = df["Close"].ewm(span=12, adjust=False).mean()
-    ema26 = df["Close"].ewm(span=26, adjust=False).mean()
-    df["MACD"] = ema12 - ema26
-    df["MACDSignal"] = df["MACD"].ewm(span=9, adjust=False).mean()
-    df["RSI"] = rsi(df["Close"])
-    df["VolumeMA20"] = df["Volume"].rolling(20).mean()
-
-    tr = pd.concat([
-        df["High"] - df["Low"],
-        (df["High"] - df["Close"].shift()).abs(),
-        (df["Low"] - df["Close"].shift()).abs(),
-    ], axis=1).max(axis=1)
-    df["ATR14"] = tr.rolling(14).mean()
-
-    last = df.iloc[-1]
-    fund = get_fundamental(ticker)
-
-    close = float(last["Close"])
-    score_tech = 0
-    score_fund = 0
-    signals = []
-
-    if pd.notna(last["SMA50"]) and close > float(last["SMA50"]):
-        score_tech += 15
-        signals.append("Harga di atas SMA 50")
-    if pd.notna(last["SMA200"]) and close > float(last["SMA200"]):
-        score_tech += 10
-        signals.append("Harga di atas SMA 200")
-    if pd.notna(last["MACD"]) and pd.notna(last["MACDSignal"]) and last["MACD"] > last["MACDSignal"]:
-        score_tech += 15
-        signals.append("MACD bullish")
-    if pd.notna(last["RSI"]) and 40 <= float(last["RSI"]) <= 65:
-        score_tech += 10
-        signals.append(f"RSI sehat ({float(last['RSI']):.1f})")
-    if pd.notna(last["VolumeMA20"]) and float(last["Volume"]) > 1.2 * float(last["VolumeMA20"]):
-        score_tech += 10
-        signals.append("Volume > 1.2x rata-rata 20 hari")
-
-    roe_pct = fund["roe"] * 100 if fund["roe"] is not None else None
+    d=history(ticker)
+    if d.empty or len(d)<100: return None
+    f=fundamentals(ticker); q=d.iloc[-1]
+    price=num(q.Close); rsi=num(q.RSI); s20=num(q.SMA20); s50=num(q.SMA50); s200=num(q.SMA200); macd=num(q.MACD); ms=num(q.MACDSignal); vol=num(q.Volume); va=num(q.VolSMA20); atr=num(q.ATR14)
+    if price is None:return None
+    per=num(f["PER"]); pbv=num(f["PBV"]); roe=num(f["ROE"]); div=num(f["Div"]) or 0
+    roe_pct=roe*100 if roe is not None else None; div_pct=div*100
+    ts=fs=0; signals=[]
+    if s50 is not None and price>s50: ts+=15; signals.append("Harga > SMA50")
+    if s200 is not None and price>s200: ts+=10; signals.append("Harga > SMA200")
+    if macd is not None and ms is not None and macd>ms: ts+=15; signals.append("MACD bullish")
+    if rsi is not None and 40<=rsi<=65: ts+=10; signals.append(f"RSI sehat ({rsi:.1f})")
+    if vol is not None and va is not None and va>0 and vol>1.2*va: ts+=10; signals.append("Volume > 1.2x rata-rata")
     if roe_pct is not None:
-        if roe_pct >= 15:
-            score_fund += 15
-            signals.append(f"ROE tinggi ({roe_pct:.1f}%)")
-        elif roe_pct >= 10:
-            score_fund += 10
-            signals.append(f"ROE sehat ({roe_pct:.1f}%)")
+        if roe_pct>=15: fs+=15; signals.append(f"ROE {roe_pct:.1f}%")
+        elif roe_pct>=10: fs+=10; signals.append(f"ROE {roe_pct:.1f}%")
+    if per is not None and 0<per<=20: fs+=15; signals.append(f"PER {per:.1f}x")
+    if pbv is not None and 0<pbv<=3: fs+=10; signals.append(f"PBV {pbv:.1f}x")
+    if atr is None or atr<=0: atr=price*.03
+    return {"Ticker":ticker,"Company":f["Company"],"Sector":f["Sector"],"Industry":f["Industry"],"Price":price,"Score":ts+fs,"Tech":ts,"Fund":fs,"PER":per,"PBV":pbv,"ROE":roe_pct,"Div":div_pct,"RSI":rsi,"SMA20":s20,"SMA50":s50,"SMA200":s200,"MACD":macd,"MACDSignal":ms,"ATR":atr,"BuyLow":price-.5*atr,"BuyHigh":price+.25*atr,"TP1":price+2*atr,"TP2":price+3.5*atr,"SL":price-1.5*atr,"Signals":signals,"DF":d}
 
-    if fund["per"] is not None and 0 < float(fund["per"]) <= 20:
-        score_fund += 15
-        signals.append(f"PER <= 20x ({float(fund['per']):.2f}x)")
-    if fund["pbv"] is not None and 0 < float(fund["pbv"]) <= 3:
-        score_fund += 10
-        signals.append(f"PBV <= 3x ({float(fund['pbv']):.2f}x)")
+def rup(x): return "N/A" if x is None else f"Rp {x:,.0f}"
 
-    atr = float(last["ATR14"]) if pd.notna(last["ATR14"]) else close * 0.02
-    buy_low = close - 0.50 * atr
-    buy_high = close + 0.25 * atr
-    tp1 = close + 2 * atr
-    tp2 = close + 3.5 * atr
-    sl = close - 1.5 * atr
-
-    return {
-        "ticker": ticker,
-        "name": fund["name"],
-        "sector": fund["sector"],
-        "industry": fund["industry"],
-        "price": close,
-        "score": score_tech + score_fund,
-        "tech": score_tech,
-        "fund": score_fund,
-        "per": fund["per"],
-        "pbv": fund["pbv"],
-        "roe": roe_pct,
-        "dividend": fund["dividend"] * 100,
-        "rsi": float(last["RSI"]) if pd.notna(last["RSI"]) else None,
-        "sma20": float(last["SMA20"]) if pd.notna(last["SMA20"]) else None,
-        "sma50": float(last["SMA50"]) if pd.notna(last["SMA50"]) else None,
-        "sma200": float(last["SMA200"]) if pd.notna(last["SMA200"]) else None,
-        "buy_low": buy_low,
-        "buy_high": buy_high,
-        "tp1": tp1,
-        "tp2": tp2,
-        "sl": sl,
-        "signals": signals,
-        "df": df,
-    }
-
-
-# SIDEBAR
-st.sidebar.header("⚙️ Parameter")
-mode = st.sidebar.radio("Sumber ticker", ["Daftar bawaan", "Input manual"])
-
-if mode == "Daftar bawaan":
-    tickers = st.sidebar.multiselect(
-        "Pilih saham",
-        DEFAULT_TICKERS,
-        default=DEFAULT_TICKERS[:12],
-    )
+universe_all=load_universe()
+st.sidebar.markdown("## ⚙️ Screening Engine")
+mode=st.sidebar.selectbox("Universe",["IDX Universe (CSV)","IDX Core (starter)","LQ45 (starter)","IDX30 (starter)","Manual"])
+if mode=="IDX Universe (CSV)": universe=universe_all
+elif mode=="IDX Core (starter)": universe=STARTER
+elif mode in INDEXES: universe=INDEXES[mode]
 else:
-    text = st.sidebar.text_area(
-        "Ticker saham",
-        "BBCA, BBRI, BMRI, BBNI",
-        help="Pisahkan dengan koma atau baris baru. Contoh: ARTO, BUKA, GOTO",
-    )
-    tickers = [x.strip().upper().replace(".JK", "") for x in text.replace("\n", ",").split(",") if x.strip()]
+    raw=st.sidebar.text_area("Ticker manual","BBCA, BBRI, BMRI, BBNI",height=100)
+    universe=[x.strip().upper().replace(".JK","") for x in raw.replace("\n",",").split(",") if x.strip()]
+universe=sorted(set(universe))
+min_score=st.sidebar.slider("Minimum Hybrid Score",0,100,55,5)
+rmin,rmax=st.sidebar.slider("RSI range",0,100,(30,70))
+req50=st.sidebar.checkbox("Wajib > SMA50")
+req200=st.sidebar.checkbox("Wajib > SMA200")
+reqmacd=st.sidebar.checkbox("Wajib MACD bullish")
+max_scan=st.sidebar.number_input("Max ticker per scan",1,max(1,len(universe)),min(50,max(1,len(universe))),10)
+if st.sidebar.button("🧹 Clear cache"):
+    st.cache_data.clear(); st.rerun()
 
-min_score = st.sidebar.slider("Minimal skor", 0, 100, 55)
+st.markdown('<div class="hero"><h1>📈 IDX Analytics Pro</h1><p>Hybrid Technical + Fundamental Stock Screener · Streamlit Dashboard</p></div>',unsafe_allow_html=True)
 
-if st.button("🚀 Jalankan Screening", type="primary", use_container_width=True):
-    if not tickers:
-        st.warning("Masukkan minimal satu ticker.")
-    else:
-        results = []
-        failed = []
-        progress = st.progress(0)
-        status = st.empty()
+if "results" not in st.session_state: st.session_state.results=[]
+if "failed" not in st.session_state: st.session_state.failed=[]
 
-        for i, ticker in enumerate(tickers, 1):
-            status.write(f"Menganalisis **{ticker}** ...")
-            try:
-                result = analyze(ticker)
-                if result is None:
-                    failed.append(ticker)
-                elif result["score"] >= min_score:
-                    results.append(result)
-            except Exception as e:
-                failed.append(f"{ticker}: {str(e)[:60]}")
-            progress.progress(i / len(tickers))
+c1,c2=st.columns([5,1]); c1.caption(f"Universe aktif: {len(universe)} ticker · Scan maksimum: {int(max_scan)}")
+run=c2.button("🚀 RUN SCAN",type="primary",use_container_width=True)
+if run:
+    results=[]; failed=[]; selected=universe[:int(max_scan)]; bar=st.progress(0); status=st.empty()
+    for n,t in enumerate(selected,1):
+        status.write(f"Scanning **{t}** ...")
+        try:
+            r=analyze(t)
+            if r is None: failed.append(t); continue
+            ok=r["Score"]>=min_score
+            if req50: ok=ok and r["SMA50"] is not None and r["Price"]>r["SMA50"]
+            if req200: ok=ok and r["SMA200"] is not None and r["Price"]>r["SMA200"]
+            if reqmacd: ok=ok and r["MACD"] is not None and r["MACDSignal"] is not None and r["MACD"]>r["MACDSignal"]
+            if r["RSI"] is not None: ok=ok and rmin<=r["RSI"]<=rmax
+            if ok: results.append(r)
+        except Exception: failed.append(t)
+        bar.progress(n/len(selected))
+    status.empty(); bar.empty(); results.sort(key=lambda x:x["Score"],reverse=True); st.session_state.results=results; st.session_state.failed=failed
 
-        progress.empty()
-        status.empty()
-        results.sort(key=lambda x: x["score"], reverse=True)
-        st.session_state["results"] = results
-        st.session_state["failed"] = failed
-
-
-if "results" in st.session_state:
-    results = st.session_state["results"]
-    failed = st.session_state.get("failed", [])
-
-    if results:
-        st.success(f"Ditemukan {len(results)} saham dengan skor minimal {min_score}.")
-
-        table = []
-        for r in results:
-            table.append({
-                "Kode": r["ticker"],
-                "Perusahaan": r["name"],
-                "Harga": f"Rp {r['price']:,.0f}",
-                "Skor": r["score"],
-                "Teknikal": r["tech"],
-                "Fundamental": r["fund"],
-                "PER": round(float(r["per"]), 2) if r["per"] is not None else "N/A",
-                "PBV": round(float(r["pbv"]), 2) if r["pbv"] is not None else "N/A",
-                "ROE": f"{r['roe']:.2f}%" if r["roe"] is not None else "N/A",
-                "Div Yield": f"{r['dividend']:.2f}%",
-                "RSI": round(r["rsi"], 2) if r["rsi"] is not None else "N/A",
-                "Sinyal": ", ".join(r["signals"][:3]),
-            })
-        st.subheader("📋 Hasil Screening")
-        st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
-
-        selected = st.selectbox("Pilih saham untuk detail", [r["ticker"] for r in results])
-        d = next(r for r in results if r["ticker"] == selected)
-
-        st.subheader(f"📊 {d['ticker']} — {d['name']}")
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Harga", f"Rp {d['price']:,.0f}")
-        c2.metric("Skor", f"{d['score']}/100")
-        c3.metric("PER", f"{d['per']:.2f}x" if d["per"] is not None else "N/A")
-        c4.metric("PBV", f"{d['pbv']:.2f}x" if d["pbv"] is not None else "N/A")
-        c5.metric("ROE", f"{d['roe']:.2f}%" if d["roe"] is not None else "N/A")
-
-        chart = d["df"].tail(180)
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(
-            x=chart.index, open=chart["Open"], high=chart["High"],
-            low=chart["Low"], close=chart["Close"], name="OHLC"
-        ))
-        fig.add_trace(go.Scatter(x=chart.index, y=chart["SMA20"], name="SMA 20", line=dict(width=1)))
-        fig.add_trace(go.Scatter(x=chart.index, y=chart["SMA50"], name="SMA 50", line=dict(width=1.5)))
-        fig.add_trace(go.Scatter(x=chart.index, y=chart["SMA200"], name="SMA 200", line=dict(width=1.5)))
-        fig.update_layout(title=f"{d['ticker']} - 180 Hari", xaxis_rangeslider_visible=False, height=600)
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.subheader("🎯 Area Teknis Berbasis ATR")
-        a1, a2, a3, a4 = st.columns(4)
-        a1.metric("Buy Zone", f"Rp {d['buy_low']:,.0f} - Rp {d['buy_high']:,.0f}")
-        a2.metric("TP 1", f"Rp {d['tp1']:,.0f}")
-        a3.metric("TP 2", f"Rp {d['tp2']:,.0f}")
-        a4.metric("Stop Loss", f"Rp {d['sl']:,.0f}")
-        st.caption("Area teknis dihitung secara mekanis menggunakan ATR; bukan jaminan harga atau nasihat investasi.")
-
-        st.subheader("🔎 Sinyal")
-        if d["signals"]:
-            for signal in d["signals"]:
-                st.write(f"• {signal}")
-        else:
-            st.info("Tidak ada sinyal khusus.")
-
-        prompt = f"""
-Anda adalah analis saham IDX. Analisis saham {d['ticker']} ({d['name']}) secara objektif.
-
-FUNDAMENTAL
-Harga: Rp {d['price']:,.0f}
-PER: {d['per'] if d['per'] is not None else 'N/A'}
-PBV: {d['pbv'] if d['pbv'] is not None else 'N/A'}
-ROE: {f'{d["roe"]:.2f}%' if d['roe'] is not None else 'N/A'}
-Dividend Yield: {d['dividend']:.2f}%
-
-TEKNIKAL
-RSI: {f'{d["rsi"]:.2f}' if d['rsi'] is not None else 'N/A'}
-SMA20: {f'{d["sma20"]:.2f}' if d['sma20'] is not None else 'N/A'}
-SMA50: {f'{d["sma50"]:.2f}' if d['sma50'] is not None else 'N/A'}
-SMA200: {f'{d["sma200"]:.2f}' if d['sma200'] is not None else 'N/A'}
-Sinyal: {', '.join(d['signals']) if d['signals'] else 'Tidak ada'}
-
-AREA TEKNIS
-Buy Zone: Rp {d['buy_low']:,.0f} - Rp {d['buy_high']:,.0f}
-TP1: Rp {d['tp1']:,.0f}
-TP2: Rp {d['tp2']:,.0f}
-Stop Loss: Rp {d['sl']:,.0f}
-
-Tugas:
-1. Jelaskan fundamental.
-2. Jelaskan trend dan momentum teknikal.
-3. Jelaskan risiko utama.
-4. Bedakan fakta, asumsi, dan interpretasi.
-5. Jangan mengarang data yang tidak tersedia.
-""".strip()
-
-        st.subheader("🤖 Prompt AI")
-        st.code(prompt, language="text")
-        st.download_button("⬇️ Download Prompt", prompt, f"prompt_{d['ticker']}.txt", "text/plain")
-
-    else:
-        st.warning("Tidak ada saham yang memenuhi skor minimum.")
-
-    if failed:
-        st.warning("Ticker gagal dianalisis: " + ", ".join(failed))
+results=st.session_state.results; failed=st.session_state.failed
+if not results:
+    st.info("Atur parameter di sidebar lalu klik **RUN SCAN**.")
+    st.markdown("### 🧭 Struktur aplikasi\n**Overview** untuk ringkasan · **Screener** untuk tabel · **Stock Detail** untuk chart · **AI Analysis** untuk prompt.")
 else:
-    st.info("Pilih ticker lalu klik '🚀 Jalankan Screening'.")
+    avg=np.mean([r["Score"] for r in results]); above=sum(r["SMA50"] is not None and r["Price"]>r["SMA50"] for r in results); bull=sum(r["MACD"] is not None and r["MACDSignal"] is not None and r["MACD"]>r["MACDSignal"] for r in results); rs=[r["RSI"] for r in results if r["RSI"] is not None]
+    k=st.columns(5)
+    k[0].metric("Passed",len(results)); k[1].metric("Avg Score",f"{avg:.1f}/100"); k[2].metric("> SMA50",above); k[3].metric("MACD Bullish",bull); k[4].metric("Avg RSI",f"{np.mean(rs):.1f}" if rs else "N/A")
+    tabs=st.tabs(["🏠 Overview","🔎 Screener","📊 Stock Detail","🤖 AI Analysis"])
 
-st.markdown("---")
-st.caption("Data Yahoo Finance dapat kosong/terlambat. Aplikasi ini adalah alat screening, bukan nasihat investasi.")
+    with tabs[0]:
+        left,right=st.columns([1.5,1])
+        with left:
+            dfscore=pd.DataFrame({"Ticker":[r["Ticker"] for r in results],"Score":[r["Score"] for r in results]}).sort_values("Score")
+            fig=go.Figure(go.Bar(x=dfscore.Score,y=dfscore.Ticker,orientation="h",text=dfscore.Score,textposition="outside")); fig.update_layout(template="plotly_dark",height=max(380,len(results)*30),margin=dict(l=10,r=30,t=20,b=20),xaxis_range=[0,105]); st.plotly_chart(fig,use_container_width=True)
+        with right:
+            st.markdown("#### Screening Snapshot")
+            st.dataframe(pd.DataFrame({"Metric":["Minimum Score","Passed","Technical Avg","Fundamental Avg","Unavailable"],"Value":[min_score,len(results),round(np.mean([r["Tech"] for r in results]),1),round(np.mean([r["Fund"] for r in results]),1),len(failed)]}),hide_index=True,use_container_width=True)
+            if failed: st.caption("Unavailable: "+", ".join(failed[:25]))
+
+    with tabs[1]:
+        rows=[{"Ticker":r["Ticker"],"Company":r["Company"],"Price":r["Price"],"Score":r["Score"],"Technical":r["Tech"],"Fundamental":r["Fund"],"RSI":r["RSI"],"PER":r["PER"],"PBV":r["PBV"],"ROE %":r["ROE"],"Div Yield %":r["Div"],"Sector":r["Sector"]} for r in results]
+        table=pd.DataFrame(rows)
+        st.dataframe(table,use_container_width=True,hide_index=True,column_config={"Price":st.column_config.NumberColumn(format="Rp %.0f"),"Score":st.column_config.ProgressColumn(min_value=0,max_value=100),"Technical":st.column_config.NumberColumn(format="%d/60"),"Fundamental":st.column_config.NumberColumn(format="%d/40"),"RSI":st.column_config.NumberColumn(format="%.2f"),"PER":st.column_config.NumberColumn(format="%.2fx"),"PBV":st.column_config.NumberColumn(format="%.2fx"),"ROE %":st.column_config.NumberColumn(format="%.2f%%"),"Div Yield %":st.column_config.NumberColumn(format="%.2f%%")})
+        st.download_button("⬇️ Export CSV",table.to_csv(index=False).encode(),"idx_screening_results.csv","text/csv")
+
+    detail=None
+    with tabs[2]:
+        choice=st.selectbox("Pilih saham",[r["Ticker"] for r in results],key="detail_choice"); detail=next(r for r in results if r["Ticker"]==choice)
+        st.markdown(f"### {detail['Ticker']} — {detail['Company']}"); st.caption(f"{detail['Sector']} · {detail['Industry']}")
+        q=st.columns(5); q[0].metric("Price",rup(detail["Price"])); q[1].metric("Score",f"{detail['Score']}/100"); q[2].metric("PER",f"{detail['PER']:.2f}x" if detail["PER"] is not None else "N/A"); q[3].metric("PBV",f"{detail['PBV']:.2f}x" if detail["PBV"] is not None else "N/A"); q[4].metric("ROE",f"{detail['ROE']:.2f}%" if detail["ROE"] is not None else "N/A")
+        period=st.radio("Chart",["3M","6M","1Y"],horizontal=True,index=1); days={"3M":90,"6M":180,"1Y":365}[period]; d=detail["DF"].tail(days)
+        fig=make_subplots(rows=3,cols=1,shared_xaxes=True,vertical_spacing=.035,row_heights=[.62,.18,.20])
+        fig.add_trace(go.Candlestick(x=d.index,open=d.Open,high=d.High,low=d.Low,close=d.Close,name="OHLC"),row=1,col=1)
+        for col,name in [("SMA20","SMA20"),("SMA50","SMA50"),("SMA200","SMA200")]: fig.add_trace(go.Scatter(x=d.index,y=d[col],name=name,line=dict(width=1.4)),row=1,col=1)
+        fig.add_trace(go.Bar(x=d.index,y=d.Volume,name="Volume"),row=2,col=1); fig.add_trace(go.Scatter(x=d.index,y=d.RSI,name="RSI",line=dict(width=1.4)),row=3,col=1)
+        fig.add_hline(y=70,line_dash="dot",row=3,col=1); fig.add_hline(y=30,line_dash="dot",row=3,col=1)
+        fig.update_layout(template="plotly_dark",height=740,xaxis_rangeslider_visible=False,margin=dict(l=10,r=10,t=20,b=10)); fig.update_yaxes(range=[0,100],row=3,col=1); st.plotly_chart(fig,use_container_width=True)
+        a,b,c=st.columns(3)
+        with a:
+            st.markdown("#### 📈 Technical")
+            for label,value in [("RSI",detail["RSI"]),("SMA20",rup(detail["SMA20"])),("SMA50",rup(detail["SMA50"])),("SMA200",rup(detail["SMA200"])),("MACD",detail["MACD"]),("ATR14",detail["ATR"])]: st.markdown(f'<div class="signal"><b>{label}</b><br>{value if isinstance(value,str) else f"{value:.2f}" if value is not None else "N/A"}</div>',unsafe_allow_html=True)
+        with b:
+            st.markdown("#### 💰 Fundamental")
+            for label,value in [("PER",f"{detail['PER']:.2f}x" if detail['PER'] is not None else "N/A"),("PBV",f"{detail['PBV']:.2f}x" if detail['PBV'] is not None else "N/A"),("ROE",f"{detail['ROE']:.2f}%" if detail['ROE'] is not None else "N/A"),("Dividend Yield",f"{detail['Div']:.2f}%"),("Market",detail['Sector'])]: st.markdown(f'<div class="signal"><b>{label}</b><br>{value}</div>',unsafe_allow_html=True)
+        with c:
+            st.markdown("#### 🎯 ATR Reference")
+            for label,value in [("Buy Zone",f"{rup(detail['BuyLow'])} – {rup(detail['BuyHigh'])}"),("TP1",rup(detail["TP1"])),("TP2",rup(detail["TP2"])),("Stop Reference",rup(detail["SL"]))]: st.markdown(f'<div class="signal"><b>{label}</b><br>{value}</div>',unsafe_allow_html=True)
+            st.caption("Level mekanis berbasis ATR; bukan jaminan atau rekomendasi investasi.")
+        st.markdown("#### 🔔 Signals"); st.write(" · ".join(detail["Signals"]) if detail["Signals"] else "Tidak ada sinyal khusus.")
+
+    with tabs[3]:
+        ai_choice=st.selectbox("Saham",[r["Ticker"] for r in results],key="ai_choice"); r=next(x for x in results if x["Ticker"]==ai_choice)
+        prompt=f'''Anda adalah equity analyst yang melakukan analisis objektif saham IDX.\n\nSAHAM: {r['Ticker']} — {r['Company']}\nSEKTOR: {r['Sector']} / {r['Industry']}\n\nFUNDAMENTAL\n- Harga: {rup(r['Price'])}\n- PER: {r['PER'] if r['PER'] is not None else 'N/A'}x\n- PBV: {r['PBV'] if r['PBV'] is not None else 'N/A'}x\n- ROE: {f"{r['ROE']:.2f}%" if r['ROE'] is not None else 'N/A'}\n- Dividend Yield: {r['Div']:.2f}%\n\nTEKNIKAL\n- RSI: {r['RSI']:.2f} jika tersedia\n- SMA20: {rup(r['SMA20'])}\n- SMA50: {rup(r['SMA50'])}\n- SMA200: {rup(r['SMA200'])}\n- MACD: {r['MACD']:.4f} jika tersedia\n- MACD Signal: {r['MACDSignal']:.4f} jika tersedia\n- ATR14: {r['ATR']:.2f}\n- Hybrid Score: {r['Score']}/100\n- Technical: {r['Tech']}/60\n- Fundamental: {r['Fund']}/40\n\nSIGNAL\n{chr(10).join('- '+s for s in r['Signals']) if r['Signals'] else '- Tidak ada'}\n\nTUGAS\n1. Jelaskan kondisi fundamental.\n2. Jelaskan trend dan momentum.\n3. Identifikasi risiko dan kondisi yang membatalkan setup.\n4. Bedakan data, asumsi, dan interpretasi.\n5. Jangan mengarang data yang tidak tersedia.\n6. Gunakan Markdown profesional.\n'''
+        st.code(prompt,language="text"); st.download_button("⬇️ Download AI Prompt",prompt,f"AI_prompt_{r['Ticker']}.txt","text/plain")
+
+st.markdown('<div style="text-align:center;color:#64748b;font-size:.75rem;padding:20px">IDX Analytics Pro · Data via Yahoo Finance · Untuk edukasi dan analisis.</div>',unsafe_allow_html=True)
